@@ -12,6 +12,7 @@ import { trpc } from "@/lib/trpc";
 import { AnimatePresence, motion } from "framer-motion";
 import { ChevronDown, ChevronUp, Mic, MicOff, Volume2, VolumeX, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { JarvisLayout } from "@/components/JarvisLayout";
 import { ReactorCore } from "@/components/ReactorCore";
 import { useAudioAmplitude } from "@/hooks/useAudioAmplitude";
 
@@ -396,12 +397,9 @@ export default function Home() {
       setOrbState("idle");
       setTicker("");
     }
-  };
-
-  // ── Render ─────────────────────────────────────────────────────────────────
+  }  // ── Render ─────────────────────────────────────────────────────────────────────────
   return (
-    <>
-      {!booted && <BootSequence onDone={() => { try { sessionStorage.setItem("jarvis_booted", "1"); } catch {} setBooted(true); }} />}
+    <JarvisLayout>  {!booted && <BootSequence onDone={() => { try { sessionStorage.setItem("jarvis_booted", "1"); } catch {} setBooted(true); }} />}
 
       <div className="flex-1 flex flex-col items-center justify-center relative overflow-hidden min-h-[calc(100vh-3rem)]">
         {/* Very subtle radial glow behind core */}
@@ -623,6 +621,6 @@ export default function Home() {
           </motion.div>
         )}
       </AnimatePresence>
-    </>
+    </JarvisLayout>
   );
 }

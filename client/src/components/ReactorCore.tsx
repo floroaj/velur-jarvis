@@ -104,6 +104,7 @@ function CoreSphere({ state, amplitude }: { state: OrbState; amplitude: number }
         emissiveIntensity={0.45}
         roughness={0.35}
         metalness={0.4}
+        envMapIntensity={0}
         transparent
         opacity={0.72}
       />

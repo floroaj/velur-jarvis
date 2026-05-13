@@ -140,3 +140,7 @@
 
 ## HDRI Fix
 - [x] Replace `<Environment preset="city" />` with procedural `RoomEnvironment` (no CDN dependency, no external HDR file)
+
+## Live-Deploy Bugfixes
+- [x] Home.tsx: wrap return JSX in <JarvisLayout> (header missing on live)
+- [x] ReactorCore.tsx: CoreSphere envMapIntensity={0} (idle too bright from RoomEnvironment reflection)
