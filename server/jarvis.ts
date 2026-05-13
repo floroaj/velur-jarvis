@@ -25,6 +25,7 @@ import {
   upsertBusinessContext,
 } from "./db";
 import { decryptSecret, encryptSecret, maskSecret } from "./_core/crypto";
+import { pingAllConnectors } from "./_core/connectorHealth";
 import { ENV } from "./_core/env";
 import { invokeLLM, type Message } from "./_core/llm";
 import { generateSpeech } from "./_core/tts";
@@ -446,5 +447,11 @@ export const jarvisRouter = router({
       const session = cookies[COOKIE_NAME] ?? "";
       await ensureAllJarvisJobs(session);
       return { ok: true };
+    }),
+
+  connectorHealth: ownerProcedure
+    .query(async ({ ctx }) => {
+      const health = await pingAllConnectors(ctx.user.id);
+      return health;
     }),
 });

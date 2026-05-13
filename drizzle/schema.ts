@@ -25,6 +25,9 @@ export const conversations = mysqlTable("conversations", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull(),
   title: varchar("title", { length: 255 }).notNull().default("New conversation"),
+  /** Cached LLM summary of older messages (injected when history > 20 messages). */
+  summaryCache: text("summaryCache"),
+  summarizedUpTo: int("summarizedUpTo"), // last message id included in summary
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });

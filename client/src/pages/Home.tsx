@@ -12,7 +12,7 @@ import { trpc } from "@/lib/trpc";
 import { AnimatePresence, motion } from "framer-motion";
 import { ChevronDown, ChevronUp, Mic, MicOff, Volume2, VolumeX, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import FlowerCore from "@/components/FlowerCore";
+import { ReactorCore } from "@/components/ReactorCore";
 import { useAudioAmplitude } from "@/hooks/useAudioAmplitude";
 
 type OrbState = "idle" | "listening" | "thinking" | "speaking";
@@ -146,7 +146,10 @@ function BootSequence({ onDone }: { onDone: () => void }) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function Home() {
   const { user } = useAuth();
-  const [booted, setBooted]         = useState(false);
+  // Boot sequence only shows once per browser session
+  const [booted, setBooted] = useState(() => {
+    try { return sessionStorage.getItem("jarvis_booted") === "1"; } catch { return false; }
+  });
   const [orbState, setOrbState]     = useState<OrbState>("idle");
   const [amplitude, setAmplitude]   = useState(0);
   const [voiceOn, setVoiceOn]       = useState(true);
@@ -398,7 +401,7 @@ export default function Home() {
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <>
-      {!booted && <BootSequence onDone={() => setBooted(true)} />}
+      {!booted && <BootSequence onDone={() => { try { sessionStorage.setItem("jarvis_booted", "1"); } catch {} setBooted(true); }} />}
 
       <div className="flex-1 flex flex-col items-center justify-center relative overflow-hidden min-h-[calc(100vh-3rem)]">
         {/* Very subtle radial glow behind core */}
@@ -422,7 +425,7 @@ export default function Home() {
           animate={{ scale: booted ? 1 : 0.85, opacity: booted ? 1 : 0 }}
           transition={{ duration: 0.8, ease: [0.23, 1, 0.32, 1] }}
         >
-          <FlowerCore state={orbState} amplitude={amplitude} size={400} />
+          <ReactorCore state={orbState} amplitude={amplitude} size={400} />
         </motion.div>
 
         {/* State label + ticker */}

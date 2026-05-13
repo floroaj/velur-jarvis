@@ -266,7 +266,11 @@ const normalizeResponseFormat = ({
 };
 
 // ── Model & thinking budget ─────────────────────────────────────────────────────────────────────────
-// JARVIS_MODEL: override via env var. Default = gemini-2.5-flash (strongest available via forge gateway).
+// IMPORTANT: The Manus Forge gateway (forge.manus.im) routes ALL model requests to gemini-2.5-flash
+// regardless of the model name specified. Tested: claude-sonnet-4-5, claude-opus-4-5, gemini-2.5-pro,
+// gemini-2.0-flash, gpt-4o — all return model: "gemini-2.5-flash" in the response.
+// To use a real Claude model, a direct Anthropic API key (ANTHROPIC_API_KEY) would be needed.
+// JARVIS_MODEL: override via env var. Default = gemini-2.5-flash (only model available via forge).
 // JARVIS_THINKING_BUDGET: thinking budget_tokens. Default = 4096.
 const JARVIS_MODEL = () => process.env.JARVIS_MODEL ?? "gemini-2.5-flash";
 const JARVIS_THINKING_BUDGET = () => parseInt(process.env.JARVIS_THINKING_BUDGET ?? "4096", 10);

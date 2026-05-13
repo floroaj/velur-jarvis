@@ -20,6 +20,8 @@ import {
   getApiKeyByLabel,
 } from "./db";
 import { decryptSecret } from "./_core/crypto";
+import { pingAllConnectors, formatHealthForSystemPrompt } from "./_core/connectorHealth";
+import { getHistoryForLLM } from "./_core/historySummarizer";
 import { generateSpeech } from "./_core/tts";
 import { notifyOwner } from "./_core/notification";
 import { SentenceAccumulator } from "./_core/sentenceSplitter";
@@ -477,23 +479,37 @@ async function getWooAuthAsync(userId?: number): Promise<string> {
       return "Basic " + Buffer.from(`${wpUser}:${wpPass}`).toString("base64");
     }
   }
-  // 2. Legacy env var fallback
+  // 2. Legacy env var fallback — must be in "user:password" format
   const appPass = process.env.WORDPRESS_APP_PASSWORD ?? "";
   if (appPass) {
-    const cred = appPass.includes(":") ? appPass : `floroaj:${appPass}`;
-    return "Basic " + Buffer.from(cred).toString("base64");
+    if (!appPass.includes(":")) {
+      throw new Error(
+        "WordPress credentials missing in vault — bitte unter /vault hinterlegen (WordPress_User + WordPress_AppPassword). " +
+        "Alternativ: WORDPRESS_APP_PASSWORD als \"username:app_password\" Format setzen."
+      );
+    }
+    return "Basic " + Buffer.from(appPass).toString("base64");
   }
-  return "";
+  throw new Error(
+    "WordPress credentials missing in vault — bitte unter /vault hinterlegen (WordPress_User + WordPress_AppPassword)."
+  );
 }
 
-/** Sync version for non-async contexts — uses env var only. */
+/** Sync version for non-async contexts — uses env var only (must be user:password format). */
 function getWooAuth(): string {
   const appPass = process.env.WORDPRESS_APP_PASSWORD ?? "";
   if (appPass) {
-    const cred = appPass.includes(":") ? appPass : `floroaj:${appPass}`;
-    return "Basic " + Buffer.from(cred).toString("base64");
+    if (!appPass.includes(":")) {
+      throw new Error(
+        "WordPress credentials missing in vault — bitte unter /vault hinterlegen (WordPress_User + WordPress_AppPassword). " +
+        "Alternativ: WORDPRESS_APP_PASSWORD als \"username:app_password\" Format setzen."
+      );
+    }
+    return "Basic " + Buffer.from(appPass).toString("base64");
   }
-  return "";
+  throw new Error(
+    "WordPress credentials missing in vault — bitte unter /vault hinterlegen (WordPress_User + WordPress_AppPassword)."
+  );
 }
 
 async function wooFetch(path: string, options?: RequestInit): Promise<unknown> {
@@ -683,6 +699,7 @@ async function uploadWordPressMedia(
 function buildSystemPrompt(
   ctx: Awaited<ReturnType<typeof getBusinessContext>>,
   vaultLabels: string[],
+  healthSection?: string,
 ): string {
   const lines: string[] = [];
   lines.push("You are JARVIS — Florian's private AI command center for Velur (velur.de).");
@@ -715,6 +732,10 @@ function buildSystemPrompt(
   if (vaultLabels.length > 0) {
     lines.push("## Available Credentials in Vault (never reveal values)");
     for (const label of vaultLabels) lines.push(`- ${label}`);
+    lines.push("");
+  }
+  if (healthSection) {
+    lines.push(healthSection);
     lines.push("");
   }
   return lines.join("\n");
@@ -779,19 +800,23 @@ export function registerJarvisStreamRoute(app: Application) {
       // Persist user message
       await appendMessage({ conversationId, role: "user", content: text });
 
-      // Build context
-      const [context, vault, history] = await Promise.all([
+      // Build context (health check runs in parallel, non-blocking)
+      const [context, vault, history, connectorHealth] = await Promise.all([
         getBusinessContext(user.id),
         listApiKeys(user.id),
         listMessages(conversationId),
+        pingAllConnectors(user.id).catch(() => null),
       ]);
 
-      const system = buildSystemPrompt(context, vault.map(k => k.label));
-      const llmMessages: Message[] = [{ role: "system", content: system }];
-      for (const m of history) {
-        if (m.role === "system") continue;
-        llmMessages.push({ role: m.role as "user" | "assistant", content: m.content });
+      const healthSection = connectorHealth ? formatHealthForSystemPrompt(connectorHealth) : "";
+      const system = buildSystemPrompt(context, vault.map(k => k.label), healthSection);
+
+      // Apply history summarization if needed (>20 messages → oldest 15 collapsed into summary)
+      const { llmMessages: historyMessages, summarized } = await getHistoryForLLM(conversationId, history);
+      if (summarized) {
+        sseWrite(res, { type: "info", message: "history_summarized" });
       }
+      const llmMessages: Message[] = [{ role: "system", content: system }, ...historyMessages];
 
       // ── Real streaming tool-calling loop ────────────────────────────────────
       let fullReply = "";

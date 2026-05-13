@@ -15,6 +15,13 @@
       "when": 1778675876607,
       "tag": "0001_nifty_enchantress",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1778681594391,
+      "tag": "0002_broad_sheva_callister",
+      "breakpoints": true
     }
   ]
 }

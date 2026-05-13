@@ -122,3 +122,18 @@
 - [x] Tests: sentence splitter abbreviations, boundaries, finalize, edge cases (5 tests)
 - [x] Tests: SSE format + audio_chunk event shape (2 tests)
 - [x] All 30 tests green (5 test files)
+
+## PR: G+H+J+K + Nachzügler A/B/I (COMPLETE)
+- [x] A-fix: hardcoded "floroaj" Fallback entfernt, klare Fehlermeldung wenn WordPress_User fehlt
+- [x] B-fix: Forge-Gateway getestet — routet alles auf gemini-2.5-flash (kein Claude verfügbar), dokumentiert in llm.ts
+- [x] G: server/_core/connectorHealth.ts (5 Ping-Funktionen, 4s Timeout, 30s Cache)
+- [x] G: tRPC jarvis.connectorHealth ownerProcedure (Promise.all alle 5 Pings)
+- [x] G: Connector-Status im buildSystemPrompt injiziert (pingAllConnectors + formatHealthForSystemPrompt)
+- [x] G: Frontend ConnectorStatusBar mit echten Live-LEDs via tRPC connectorHealth
+- [x] H: Boot-Sequence nur einmal pro Session (sessionStorage.jarvis_booted)
+- [x] I: Conversation History Summarization (>20 Messages → LLM-Summary, DB-Cache in summaryCache column)
+- [x] J: FlowerCore.tsx gelöscht, Home auf ReactorCore zurückgestellt
+- [x] K: JarvisLayout-Header mit ConnectorStatusBar restauriert
+- [x] Tests: connectorHealth (3 Tests: format, null-guard, error-status)
+- [x] Tests: historySummarizer (3 Tests: pass-through, system-filter, fallback)
+- [x] Alle 39 Tests grün (6 Test-Dateien)

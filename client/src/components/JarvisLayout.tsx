@@ -18,11 +18,11 @@ const NAV_ITEMS = [
 ];
 
 const CONNECTORS = [
-  { key: "triplewhale", label: "TW"  },
-  { key: "klaviyo",     label: "KV"  },
-  { key: "clarity",     label: "CL"  },
-  { key: "meta",        label: "META"},
-  { key: "woo",         label: "WOO" },
+  { key: "tw",   label: "TW"  },
+  { key: "kl",   label: "KV"  },
+  { key: "cl",   label: "CL"  },
+  { key: "meta", label: "META"},
+  { key: "wp",   label: "WP"  },
 ];
 
 type ConnStatus = "online" | "offline" | "idle";
@@ -33,6 +33,7 @@ export function JarvisLayout({ children }: { children: ReactNode }) {
   const [connStatus, setConnStatus] = useState<Record<string, ConnStatus>>(
     Object.fromEntries(CONNECTORS.map(c => [c.key, "idle" as ConnStatus])),
   );
+  const [connTooltip, setConnTooltip] = useState<Record<string, string>>({});
   const [clock, setClock] = useState("");
 
   // Schedule setup — fires once when owner is authenticated
@@ -51,16 +52,27 @@ export function JarvisLayout({ children }: { children: ReactNode }) {
     return () => clearInterval(id);
   }, []);
 
-  // Connector health simulation (replaced by real pings once keys are in vault)
+  // Real connector health via tRPC — refreshes every 30s
+  const healthQuery = trpc.jarvis.connectorHealth.useQuery(undefined, {
+    enabled: !!(isAuthenticated && user?.role === "admin"),
+    refetchInterval: 30_000,
+    retry: false,
+    staleTime: 25_000,
+  });
+
   useEffect(() => {
-    const check = () =>
-      setConnStatus(Object.fromEntries(
-        CONNECTORS.map(c => [c.key, (Math.random() > 0.12 ? "online" : "idle") as ConnStatus]),
-      ));
-    check();
-    const id = setInterval(check, 10_000);
-    return () => clearInterval(id);
-  }, []);
+    if (!healthQuery.data) return;
+    const h = healthQuery.data as unknown as Record<string, { status: string; message: string }>;
+    const statusMap: Record<string, ConnStatus> = {};
+    const tooltipMap: Record<string, string> = {};
+    for (const key of Object.keys(h)) {
+      const s = h[key]?.status;
+      statusMap[key] = s === "ok" ? "online" : s === "missing_key" ? "idle" : "offline";
+      tooltipMap[key] = h[key]?.message ?? "";
+    }
+    setConnStatus(statusMap);
+    setConnTooltip(tooltipMap);
+  }, [healthQuery.data]);
 
   /* ── Loading ─────────────────────────────────────────────────────────────── */
   if (loading) {
