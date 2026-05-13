@@ -1,0 +1,19 @@
+{
+  "name": "Jarvis — Velur AI",
+  "short_name": "Jarvis",
+  "description": "Florian's private AI command center for Velur",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050508",
+  "theme_color": "#050508",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "64x64",
+      "type": "image/x-icon"
+    }
+  ],
+  "categories": ["productivity", "business"],
+  "lang": "de"
+}

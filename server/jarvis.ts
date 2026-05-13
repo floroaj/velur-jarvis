@@ -438,13 +438,13 @@ export const jarvisRouter = router({
 
   setupSchedule: ownerProcedure
     .query(async ({ ctx }) => {
-      const { ensureMorningBriefingJob } = await import("./jarvisSchedule");
+      const { ensureAllJarvisJobs } = await import("./jarvisSchedule");
       const { COOKIE_NAME } = await import("../shared/const");
       const { parse: parseCookieHeader } = await import("cookie");
       const cookieHeader = ctx.req.headers.cookie ?? "";
       const cookies = parseCookieHeader(cookieHeader);
       const session = cookies[COOKIE_NAME] ?? "";
-      await ensureMorningBriefingJob(session);
+      await ensureAllJarvisJobs(session);
       return { ok: true };
     }),
 });

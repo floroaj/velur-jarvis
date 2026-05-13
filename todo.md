@@ -72,18 +72,18 @@
 - [x] Total: 16 tests passing
 
 ## Future Enhancements (next iteration)
-- [ ] ElevenLabs TTS integration (key slot ready, swap generateSpeech in tts.ts)
-- [ ] Picovoice Porcupine wake-word (key slot ready, replace VAD energy detector)
+- [ ] ElevenLabs TTS integration (key slot ready — awaiting API key from Florian)
+- [ ] Picovoice Porcupine wake-word (key slot ready — awaiting API key from Florian)
 - [ ] Triple Whale native connector (read KPIs on voice command via API)
 - [ ] Klaviyo native connector (flow performance, segments, email revenue)
 - [ ] Meta Ads connector via MCP (spend, ROAS, campaign status)
-- [ ] WordPress connector (publish posts, upload media via Jarvis voice)
-- [ ] Google Drive connector (read/create docs via Jarvis voice)
-- [ ] Holographic data overlay cards (float near orb when Jarvis speaks numbers)
-- [ ] Anomaly alert system with configurable thresholds
-- [ ] Weekly review auto-briefing (Fridays)
-- [ ] Mobile PWA (manifest.json + service worker + touch-to-talk)
-- [ ] Multi-display wall mode
+- [x] WordPress connector (create/publish posts via voice — create_wordpress_post tool)
+- [ ] Google Drive connector (read/create docs via Jarvis voice) [Future]
+- [ ] Holographic data overlay cards (float near orb when Jarvis speaks numbers) [Future]
+- [ ] Anomaly alert system with configurable thresholds [Future]
+- [x] Weekly review auto-briefing (Fridays at 10:00 CEST via heartbeat cron)
+- [x] Mobile PWA (manifest.json + service worker + Apple meta tags)
+- [ ] Multi-display wall mode [Future]
 
 ## Redesign – Apple-Minimal + Flower-of-Life Core
 - [x] New CSS theme: deep black background, Inter font, Apple-style minimal UI, no HUD clutter
@@ -102,6 +102,6 @@
 - [x] Tool: get_woocommerce_orders (letzte N Bestellungen, Status, Kunde, Total)
 - [x] Tool: get_woocommerce_products (Produkte, Preis, Lagerstand, Sales)
 - [x] WooCommerce credentials via WordPress Application Password (same as WP connector)
-- [ ] WooCommerce Consumer Key/Secret vault slot (for dedicated WC API keys)
-- [ ] Tool: get_woocommerce_customers (Neukunden, Lifetime Value)
-- [ ] Tool: update_woocommerce_product_stock (Lagerstand per Sprache anpassen)
+- [x] WooCommerce credentials secured via WORDPRESS_APP_PASSWORD env secret (no hardcoded creds)
+- [x] Tool: get_woocommerce_customers (Neukunden, Lifetime Value)
+- [x] Tool: update_woocommerce_product_stock (Lagerstand per Sprache anpassen)

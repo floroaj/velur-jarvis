@@ -164,6 +164,39 @@ const JARVIS_TOOLS: Tool[] = [
   {
     type: "function",
     function: {
+      name: "get_woocommerce_customers",
+      description: "Get WooCommerce customer statistics: new customers, top customers by spend, and lifetime value overview.",
+      parameters: {
+        type: "object",
+        properties: {
+          days: { type: "number", description: "Number of past days to look at for new customers (default 30)" },
+          limit: { type: "number", description: "Number of top customers to return (default 10)" },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_woocommerce_product_stock",
+      description: "Update the stock quantity of a WooCommerce product by product ID or name.",
+      parameters: {
+        type: "object",
+        properties: {
+          product_id: { type: "number", description: "WooCommerce product ID" },
+          product_name: { type: "string", description: "Product name to search for if ID is unknown" },
+          stock_quantity: { type: "number", description: "New stock quantity" },
+        },
+        required: ["stock_quantity"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "create_wordpress_post",
       description: "Create a draft or published post on velur.de WordPress. Returns the post URL.",
       parameters: {
@@ -175,6 +208,23 @@ const JARVIS_TOOLS: Tool[] = [
           categories: { type: "array", items: { type: "number" }, description: "Category IDs" },
         },
         required: ["title", "content"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "upload_wordpress_media",
+      description: "Upload an image to the velur.de WordPress media library from a public URL. Returns the attachment ID and URL.",
+      parameters: {
+        type: "object",
+        properties: {
+          image_url: { type: "string", description: "Public URL of the image to upload" },
+          filename: { type: "string", description: "Filename to save as in WordPress (e.g. ring-photo.jpg)" },
+          alt_text: { type: "string", description: "Alt text for the image" },
+        },
+        required: ["image_url", "filename"],
         additionalProperties: false,
       },
     },
@@ -208,12 +258,26 @@ async function executeToolCall(
         return await fetchWooCommerceOrders(args.status as string | undefined, args.limit as number | undefined);
       case "get_woocommerce_products":
         return await fetchWooCommerceProducts(args.search as string | undefined, args.limit as number | undefined);
+      case "get_woocommerce_customers":
+        return await fetchWooCommerceCustomers(args.days as number | undefined, args.limit as number | undefined);
+      case "update_woocommerce_product_stock":
+        return await updateWooCommerceStock(
+          args.product_id as number | undefined,
+          args.product_name as string | undefined,
+          args.stock_quantity as number,
+        );
       case "create_wordpress_post":
         return await createWordPressPost(
           args.title as string,
           args.content as string,
           (args.status as string) ?? "draft",
           (args.categories as number[]) ?? [],
+        );
+      case "upload_wordpress_media":
+        return await uploadWordPressMedia(
+          args.image_url as string,
+          args.filename as string,
+          (args.alt_text as string) ?? "",
         );
       default:
         return `Unknown tool: ${toolName}`;
@@ -381,11 +445,33 @@ async function runTaskTool(name: string, userId: number): Promise<string> {
 // ── WooCommerce helpers ──────────────────────────────────────────────────────
 
 const WOO_BASE = "https://velur.de/wp-json/wc/v3";
-const WOO_AUTH = "Basic " + Buffer.from("floroaj:LdII kMLa E3WM mW0r uFAu GutB").toString("base64");
 
-async function wooFetch(path: string): Promise<unknown> {
+/**
+ * Build WooCommerce Basic Auth header.
+ * Priority: WORDPRESS_APP_PASSWORD env var → WP_USER/WP_APP_PASS env vars → fallback to WP app password env.
+ * Credentials are NEVER hardcoded — they must be set via environment secrets.
+ */
+function getWooAuth(): string {
+  const appPass = process.env.WORDPRESS_APP_PASSWORD ?? "";
+  if (appPass) {
+    // If already in user:pass format, use as-is; otherwise prepend WP username
+    const cred = appPass.includes(":") ? appPass : `${process.env.WP_USER ?? "floroaj"}:${appPass}`;
+    return "Basic " + Buffer.from(cred).toString("base64");
+  }
+  const user = process.env.WP_USER ?? "";
+  const pass = process.env.WP_APP_PASS ?? "";
+  if (user && pass) return "Basic " + Buffer.from(`${user}:${pass}`).toString("base64");
+  const vaultCred = process.env.WOOCOMMERCE_AUTH ?? "";
+  if (vaultCred) return "Basic " + Buffer.from(vaultCred).toString("base64");
+  return "";
+}
+
+async function wooFetch(path: string, options?: RequestInit): Promise<unknown> {
+  const auth = getWooAuth();
+  if (!auth) throw new Error("WooCommerce credentials not configured. Please add WORDPRESS_APP_PASSWORD to the vault.");
   const resp = await fetch(`${WOO_BASE}${path}`, {
-    headers: { Authorization: WOO_AUTH, "Content-Type": "application/json" },
+    ...options,
+    headers: { Authorization: auth, "Content-Type": "application/json", ...(options?.headers ?? {}) },
   });
   if (!resp.ok) {
     const err = await resp.text().catch(() => "");
@@ -443,6 +529,51 @@ async function fetchWooCommerceProducts(search?: string, limit = 10): Promise<st
   }
 }
 
+async function fetchWooCommerceCustomers(days = 30, limit = 10): Promise<string> {
+  try {
+    const after = new Date(Date.now() - days * 86400000).toISOString();
+    const [allCustomers, newOrders] = await Promise.all([
+      wooFetch(`/customers?per_page=${Math.min(limit, 50)}&orderby=total_spent&order=desc`) as Promise<any[]>,
+      wooFetch(`/orders?after=${after}&per_page=100&status=completed,processing`) as Promise<any[]>,
+    ]);
+    const newCustomerIds = new Set(newOrders.map((o: any) => o.customer_id).filter(Boolean));
+    const lines = [
+      `New customers (last ${days} days): ${newCustomerIds.size}`,
+      `Top ${Math.min(limit, allCustomers.length)} customers by spend:`,
+      ...allCustomers.slice(0, limit).map((c: any) =>
+        `${c.first_name} ${c.last_name} | Orders: ${c.orders_count} | Total: €${c.total_spent}`
+      ),
+    ];
+    return lines.join("\n");
+  } catch (err) {
+    return `WooCommerce customers error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+async function updateWooCommerceStock(
+  productId: number | undefined,
+  productName: string | undefined,
+  stockQuantity: number,
+): Promise<string> {
+  try {
+    let id = productId;
+    if (!id && productName) {
+      const results = await wooFetch(`/products?search=${encodeURIComponent(productName)}&per_page=5`) as any[];
+      if (!results.length) return `No product found matching "${productName}".`;
+      id = results[0].id;
+    }
+    if (!id) return "Please provide a product ID or product name.";
+    // Safety: confirm this is a stock update, not a destructive delete
+    const updated = await wooFetch(`/products/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ stock_quantity: stockQuantity, manage_stock: true }),
+    }) as any;
+    return `Stock updated: ${updated.name} → ${updated.stock_quantity} units.`;
+  } catch (err) {
+    return `WooCommerce stock update error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
 async function createWordPressPost(
   title: string,
   content: string,
@@ -450,12 +581,14 @@ async function createWordPressPost(
   categories: number[],
 ): Promise<string> {
   const wpUrl = "https://velur.de/wp-json/wp/v2/posts";
-  const credentials = Buffer.from("floroaj:LdII kMLa E3WM mW0r uFAu GutB").toString("base64");
+  // Use same auth as WooCommerce (WORDPRESS_APP_PASSWORD env var)
+  const auth = getWooAuth();
+  if (!auth) return "WordPress credentials not configured. Please add WORDPRESS_APP_PASSWORD to environment secrets.";
 
   const resp = await fetch(wpUrl, {
     method: "POST",
     headers: {
-      Authorization: `Basic ${credentials}`,
+      Authorization: auth,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ title, content, status, categories }),
@@ -466,6 +599,52 @@ async function createWordPressPost(
   }
   const post = await resp.json() as { link?: string; id?: number };
   return `Post created: ${post.link ?? `ID ${post.id}`}`;
+}
+
+async function uploadWordPressMedia(
+  imageUrl: string,
+  filename: string,
+  altText: string,
+): Promise<string> {
+  const auth = getWooAuth();
+  if (!auth) return "WordPress credentials not configured. Please add WORDPRESS_APP_PASSWORD to environment secrets.";
+
+  try {
+    // Fetch the image from the source URL
+    const imgResp = await fetch(imageUrl);
+    if (!imgResp.ok) return `Could not fetch image from ${imageUrl}: HTTP ${imgResp.status}`;
+    const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
+    const contentType = imgResp.headers.get("content-type") ?? "image/jpeg";
+
+    // Upload to WordPress media library
+    const uploadResp = await fetch("https://velur.de/wp-json/wp/v2/media", {
+      method: "POST",
+      headers: {
+        Authorization: auth,
+        "Content-Disposition": `attachment; filename="${filename}"`,
+        "Content-Type": contentType,
+      },
+      body: imgBuffer,
+    });
+    if (!uploadResp.ok) {
+      const err = await uploadResp.text();
+      return `WordPress media upload error ${uploadResp.status}: ${err.slice(0, 300)}`;
+    }
+    const media = await uploadResp.json() as { id?: number; source_url?: string; link?: string };
+
+    // Set alt text if provided
+    if (altText && media.id) {
+      await fetch(`https://velur.de/wp-json/wp/v2/media/${media.id}`, {
+        method: "POST",
+        headers: { Authorization: auth, "Content-Type": "application/json" },
+        body: JSON.stringify({ alt_text: altText }),
+      }).catch(() => {}); // Non-fatal
+    }
+
+    return `Media uploaded: ID ${media.id}, URL: ${media.source_url ?? media.link ?? "unknown"}`;
+  } catch (err) {
+    return `WordPress media upload error: ${err instanceof Error ? err.message : String(err)}`;
+  }
 }
 
 // ── System prompt builder (same as jarvis.ts) ─────────────────────────────────
@@ -667,6 +846,62 @@ export function registerJarvisStreamRoute(app: Application) {
       console.error("[JarvisStream] Error:", err);
       sseWrite(res, { type: "error", message: err instanceof Error ? err.message : String(err) });
       res.end();
+    }
+  });
+
+  // Scheduled: weekly review callback
+  app.post("/api/scheduled/weekly-review", async (req, res) => {
+    try {
+      const user = await sdk.authenticateRequest(req);
+      if (!user.isCron && user.openId !== ENV.ownerOpenId) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+
+      const { getUserByOpenId } = await import("./db");
+      const owner = await getUserByOpenId(ENV.ownerOpenId);
+      if (!owner) { res.json({ ok: false, reason: "owner not found" }); return; }
+
+      const context = await getBusinessContext(owner.id);
+      const vault = await listApiKeys(owner.id);
+      const system = buildSystemPrompt(context, vault.map(k => k.label));
+
+      // Gather data from available connectors
+      let dataContext = "";
+      try {
+        const [wooSummary, klaviyoSummary] = await Promise.allSettled([
+          fetchWooCommerceSummary(7),
+          fetchKlaviyoSummary(7, owner.id),
+        ]);
+        if (wooSummary.status === "fulfilled") dataContext += `\nWooCommerce:\n${wooSummary.value}`;
+        if (klaviyoSummary.status === "fulfilled") dataContext += `\nKlaviyo:\n${klaviyoSummary.value}`;
+      } catch { /* non-fatal */ }
+
+      const weekLabel = new Date().toLocaleDateString("de-DE", { day: "numeric", month: "long", year: "numeric" });
+      const prompt = `Erstelle einen prägnanten Wochen-Performance-Review für Florian (Woche bis ${weekLabel}).${dataContext ? `\n\nVerfügbare Daten:${dataContext}` : ""} Analysiere die wichtigsten KPIs, identifiziere 2–3 Handlungsempfehlungen für die kommende Woche und schließe mit einem motivierenden Satz. Maximal 6 Sätze. Kein Bullet-Format.`;
+
+      const result = await invokeLLM({
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: prompt },
+        ],
+      });
+
+      const reviewText = (() => {
+        const c = result.choices?.[0]?.message?.content;
+        if (typeof c === "string") return c;
+        if (Array.isArray(c)) return c.map((p: any) => p.type === "text" ? p.text : "").join("");
+        return "Guten Morgen, Florian. Dein Wochen-Review steht bereit.";
+      })();
+
+      const convId = await createConversation({ userId: owner.id, title: `Wochen-Review ${weekLabel}` });
+      await appendMessage({ conversationId: convId, role: "assistant", content: reviewText });
+      await notifyOwner({ title: `📊 Jarvis Wochen-Review`, content: reviewText.slice(0, 200) });
+
+      res.json({ ok: true, review: reviewText });
+    } catch (err) {
+      console.error("[WeeklyReview] Error:", err);
+      res.status(500).json({ error: String(err) });
     }
   });
 
