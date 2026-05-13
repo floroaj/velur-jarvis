@@ -1,12 +1,10 @@
 /**
  * JarvisLayout — Apple-minimal shell
  * Slim top bar, no sidebar, no HUD grid, no scanlines.
- * Owner-only gate enforced on both client and server.
+ * PIN-based auth gate (no Manus OAuth required).
  */
-import { useAuth } from "@/_core/hooks/useAuth";
-import { getLoginUrl } from "@/const";
 import { trpc } from "@/lib/trpc";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 
 const NAV_ITEMS = [
@@ -27,13 +25,142 @@ const CONNECTORS = [
 
 type ConnStatus = "online" | "offline" | "idle";
 
+// ── PIN Login Screen ──────────────────────────────────────────────────────────
+function PinScreen({ onSuccess }: { onSuccess: () => void }) {
+  const [digits, setDigits] = useState<string[]>([]);
+  const [error, setError] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const submit = useCallback(async (pin: string) => {
+    setLoading(true);
+    setError(false);
+    try {
+      const res = await fetch("/api/pin-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ pin }),
+      });
+      if (res.ok) {
+        onSuccess();
+      } else {
+        setError(true);
+        setDigits([]);
+      }
+    } catch {
+      setError(true);
+      setDigits([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [onSuccess]);
+
+  const press = useCallback((d: string) => {
+    if (loading) return;
+    setError(false);
+    setDigits(prev => {
+      const next = [...prev, d];
+      if (next.length === 4) {
+        // Submit after short delay so last dot renders
+        setTimeout(() => submit(next.join("")), 80);
+      }
+      return next.length <= 4 ? next : prev;
+    });
+  }, [loading, submit]);
+
+  const del = useCallback(() => {
+    if (loading) return;
+    setError(false);
+    setDigits(prev => prev.slice(0, -1));
+  }, [loading]);
+
+  // Keyboard support
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key >= "0" && e.key <= "9") press(e.key);
+      if (e.key === "Backspace") del();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [press, del]);
+
+  const KEYS = ["1","2","3","4","5","6","7","8","9","","0","⌫"];
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background px-6">
+      <div className="flex flex-col items-center gap-8 fade-in text-center max-w-xs w-full">
+        {/* Logo */}
+        <div className="flex flex-col items-center gap-3">
+          <div className={`w-14 h-14 rounded-full border flex items-center justify-center transition-all duration-300 ${
+            error ? "border-red-500/60 glow-red" : "border-primary/40 glow-teal"
+          }`}>
+            <div className={`w-4 h-4 rounded-full transition-colors duration-300 ${
+              error ? "bg-red-500" : "bg-primary"
+            } ${loading ? "animate-pulse" : ""}`} />
+          </div>
+          <p className="text-xl font-semibold tracking-tight text-foreground">Jarvis</p>
+          <p className="text-xs text-muted-foreground tracking-widest uppercase">
+            {error ? "Falscher Code" : "PIN eingeben"}
+          </p>
+        </div>
+
+        {/* Dot indicators */}
+        <div className="flex gap-4">
+          {[0,1,2,3].map(i => (
+            <div
+              key={i}
+              className={`w-3 h-3 rounded-full border transition-all duration-150 ${
+                error
+                  ? "border-red-500 bg-red-500"
+                  : digits.length > i
+                    ? "border-primary bg-primary scale-110"
+                    : "border-border bg-transparent"
+              }`}
+            />
+          ))}
+        </div>
+
+        {/* Keypad */}
+        <div className="grid grid-cols-3 gap-3 w-full max-w-[240px]">
+          {KEYS.map((k, idx) => {
+            if (k === "") return <div key={idx} />;
+            const isDelete = k === "⌫";
+            return (
+              <button
+                key={idx}
+                onClick={() => isDelete ? del() : press(k)}
+                disabled={loading}
+                className={`h-14 rounded-2xl text-base font-medium transition-all duration-150 active:scale-95 select-none
+                  ${isDelete
+                    ? "text-muted-foreground hover:text-foreground bg-transparent border border-border/40 hover:border-border"
+                    : "bg-white/5 border border-border/30 text-foreground hover:bg-white/10 hover:border-border/60"
+                  } disabled:opacity-40`}
+              >
+                {k}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main Layout ───────────────────────────────────────────────────────────────
 export function JarvisLayout({ children }: { children: ReactNode }) {
-  const { user, loading, isAuthenticated, logout } = useAuth();
+  const meQuery = trpc.auth.me.useQuery(undefined, {
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+
+  const user = meQuery.data ?? null;
+  const loading = meQuery.isLoading;
+  const isAuthenticated = Boolean(user);
+
   const [location] = useLocation();
   const [connStatus, setConnStatus] = useState<Record<string, ConnStatus>>(
     Object.fromEntries(CONNECTORS.map(c => [c.key, "idle" as ConnStatus])),
   );
-  const [connTooltip, setConnTooltip] = useState<Record<string, string>>({});
   // Clock uses a ref + direct DOM update to avoid re-rendering the entire layout tree every second
   const clockRef = useRef<HTMLSpanElement>(null);
 
@@ -48,7 +175,9 @@ export function JarvisLayout({ children }: { children: ReactNode }) {
   useEffect(() => {
     const tick = () => {
       if (clockRef.current) {
-        clockRef.current.textContent = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        clockRef.current.textContent = new Date().toLocaleTimeString("de-DE", {
+          hour: "2-digit", minute: "2-digit", second: "2-digit",
+        });
       }
     };
     tick();
@@ -68,15 +197,17 @@ export function JarvisLayout({ children }: { children: ReactNode }) {
     if (!healthQuery.data) return;
     const h = healthQuery.data as unknown as Record<string, { status: string; message: string }>;
     const statusMap: Record<string, ConnStatus> = {};
-    const tooltipMap: Record<string, string> = {};
     for (const key of Object.keys(h)) {
       const s = h[key]?.status;
       statusMap[key] = s === "ok" ? "online" : s === "missing_key" ? "idle" : "offline";
-      tooltipMap[key] = h[key]?.message ?? "";
     }
     setConnStatus(statusMap);
-    setConnTooltip(tooltipMap);
   }, [healthQuery.data]);
+
+  const logout = useCallback(async () => {
+    await fetch("/api/pin-logout", { method: "POST", credentials: "include" });
+    meQuery.refetch();
+  }, [meQuery]);
 
   /* ── Loading ─────────────────────────────────────────────────────────────── */
   if (loading) {
@@ -92,54 +223,9 @@ export function JarvisLayout({ children }: { children: ReactNode }) {
     );
   }
 
-  /* ── Not authenticated ───────────────────────────────────────────────────── */
+  /* ── Not authenticated → PIN screen ─────────────────────────────────────── */
   if (!isAuthenticated) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background px-6">
-        <div className="flex flex-col items-center gap-8 fade-in text-center max-w-sm">
-          <div className="w-16 h-16 rounded-full border border-primary/30 flex items-center justify-center glow-teal">
-            <div className="w-5 h-5 rounded-full bg-primary" />
-          </div>
-          <div>
-            <p className="text-2xl font-semibold tracking-tight text-foreground mb-2">Jarvis</p>
-            <p className="text-sm text-muted-foreground">
-              Private AI command center for Velur. Authentication required.
-            </p>
-          </div>
-          <button
-            onClick={() => (window.location.href = getLoginUrl())}
-            className="px-6 py-2.5 rounded-full bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity btn-press"
-          >
-            Sign in
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  /* ── Not owner ───────────────────────────────────────────────────────────── */
-  if (user && user.role !== "admin") {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background px-6">
-        <div className="flex flex-col items-center gap-6 fade-in text-center max-w-sm">
-          <div className="w-14 h-14 rounded-full border border-destructive/40 flex items-center justify-center">
-            <span className="text-destructive text-2xl">⊘</span>
-          </div>
-          <div>
-            <p className="text-lg font-semibold text-foreground mb-1">Access Restricted</p>
-            <p className="text-sm text-muted-foreground">
-              Jarvis is a private system. Only the owner can access this interface.
-            </p>
-          </div>
-          <button
-            onClick={logout}
-            className="px-5 py-2 rounded-full border border-border text-sm text-muted-foreground hover:text-foreground transition-colors btn-press"
-          >
-            Sign out
-          </button>
-        </div>
-      </div>
-    );
+    return <PinScreen onSuccess={() => meQuery.refetch()} />;
   }
 
   /* ── Dot color ───────────────────────────────────────────────────────────── */

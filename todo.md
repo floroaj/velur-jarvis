@@ -145,6 +145,15 @@
 - [x] Home.tsx: wrap return JSX in <JarvisLayout> (header missing on live)
 - [x] ReactorCore.tsx: CoreSphere envMapIntensity={0} (idle too bright from RoomEnvironment reflection)
 
+## PIN Auth Replacement
+- [x] Add JARVIS_PIN secret (value: 9179) via webdev_request_secrets
+- [x] Server: POST /api/pin-login endpoint — verify PIN, set JWT session cookie
+- [x] Server: POST /api/pin-logout endpoint — clear cookie
+- [x] JarvisLayout: replace Manus login gate with PIN entry screen (4-digit keypad)
+- [x] Frontend: PIN entry UI with keypad + keyboard support + error state
+- [x] Manus OAuth no longer required for Jarvis access
+- [x] 0 TypeScript errors, 42/42 tests green (3 new PIN auth tests)
+
 ## OWNER_OPEN_ID Production Fix
 - [x] Read openId from users table for floriandkk@gmail.com (LDGq2ymZMpJNbrpSoXEuTJ)
 - [x] ownerProcedure: add admin-role fallback when OWNER_OPEN_ID not injected by platform

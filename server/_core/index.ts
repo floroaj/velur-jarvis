@@ -9,6 +9,7 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { registerJarvisStreamRoute } from "../jarvisStream";
+import { registerPinAuthRoutes } from "../pinAuth";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -37,6 +38,7 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
   registerOAuthRoutes(app);
+  registerPinAuthRoutes(app);
   registerJarvisStreamRoute(app);
   // tRPC API
   app.use(
