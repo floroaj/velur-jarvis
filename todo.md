@@ -15,20 +15,35 @@
 - [x] `jarvis.vaultList` / `vaultUpsert` / `vaultReveal` / `vaultDelete` – encrypted API key vault
 - [x] `jarvis.tasksList` / `taskUpsert` / `taskDelete` / `taskRun` / `taskRuns` – named webhooks / actions
 - [x] `taskRun` resolves `{{vault:LABEL}}` placeholders from the vault before executing HTTP request
+- [x] SSE streaming endpoint `/api/jarvis/stream` for token-by-token LLM responses
+- [x] Tool-calling infrastructure in SSE handler (function schema, execution loop, tool audit display)
+- [x] `jarvis.setupSchedule` – registers morning briefing heartbeat cron
 
 ## Frontend – Theme & Layout
 - [x] Dark HUD theme in `index.css` (deep navy/black background, cyan/gold HUD accents, Orbitron + Rajdhani fonts)
 - [x] JarvisLayout (custom HUD shell with header nav, status bar, owner gate)
 - [x] App.tsx routes: /, /conversations, /context, /vault, /tasks
+- [x] Connector status bar (Triple Whale, Klaviyo, Clarity, Meta Ads, WordPress) with LED indicators
+- [x] Boot sequence animation on first load (6-step diagnostic ticker)
+- [x] Clock display with live update in header
 
-## Frontend – Voice Orb (Centerpiece)
-- [x] Animated circular voice orb component (SVG + Framer Motion) reacting to mic input level
-- [x] Visual states: idle, listening, thinking, speaking (color shifts + concentric rings)
-- [x] Status overlay text (Standby / Listening / Thinking / Speaking)
-- [x] Web Audio API analyser to drive orb amplitude in real time
+## Frontend – 3D Reactor Core (Centerpiece)
+- [x] Three.js + @react-three/fiber + @react-three/postprocessing installed
+- [x] 3D sphere with emissive material, 4 rotating rings, particle field, Bloom post-processing
+- [x] Audio-reactive amplitude drives sphere scale and emissive intensity
+- [x] State-based color transitions: idle=cyan, listening=green, thinking=gold, speaking=bright-cyan
+- [x] Fallback 2D VoiceOrb component retained for reference
+
+## Frontend – Voice & Streaming
+- [x] Streaming SSE consumer: token-by-token text appears in session log with cursor blink
+- [x] Tool badge display in session log (shows which connectors Jarvis used)
+- [x] Active tool indicator overlay during tool execution
+- [x] VAD wake-word (energy-based RMS threshold, no external key)
+- [x] VAD ON/OFF toggle button in controls
+- [x] Live streaming text in ticker bar during thinking/speaking
 
 ## Frontend – Pages
-- [x] Home: central orb, push-to-talk (spacebar) + hands-free toggle, live transcript ticker, text fallback
+- [x] Home: 3D reactor core, push-to-talk (spacebar) + hands-free + VAD, streaming session log, text fallback
 - [x] Conversations: scrollable transcript log, conversation list, delete
 - [x] Business Context: editor for brand/mission/voice/products/instructions + extra memory blocks
 - [x] API Vault: list + add/edit/delete encrypted keys with reveal toggle
@@ -38,24 +53,34 @@
 - [x] MediaRecorder mic capture (webm/opus)
 - [x] Hands-free silence detection auto-stops recording
 - [x] Upload audio via storage → Whisper transcribe
-- [x] Generate LLM reply → TTS → autoplay; orb amplitude follows TTS audio
+- [x] Generate LLM reply via SSE stream → TTS → autoplay; orb amplitude follows TTS audio
 - [x] Spacebar push-to-talk
+- [x] VAD energy-based auto-trigger
+
+## Scheduled Jobs
+- [x] Morning briefing cron registered (07:00 UTC = 09:00 CEST daily)
 
 ## Security & Polish
 - [x] All Jarvis endpoints guarded by `ownerProcedure` (owner-only)
 - [x] Vault values masked by default with explicit reveal action
-- [x] Vitest coverage for vault encryption (3 tests passing)
+- [x] Client-side owner gate in JarvisLayout (admin role check)
 
-## Delivery
-- [x] Owner-only client gate in JarvisLayout (admin role)
-- [x] Live transcript ticker overlay near the orb
-- [x] Checkpoint
-- [x] Hand off to Florian with usage guide
+## Tests
+- [x] Vault encryption roundtrip, IV randomization, masking (3 tests)
+- [x] Auth logout cookie clearing (1 test)
+- [x] Streaming: vault interpolation, tool name parsing, SSE formatting, system prompt builder (12 tests)
+- [x] Total: 16 tests passing
 
-## Future Enhancements
-- [ ] Streaming LLM responses via SSE/WebSocket for faster perceived latency
-- [ ] Wake-word detection ("Hey Jarvis") via Picovoice/Porcupine
-- [ ] Tool-calling: let Jarvis trigger tasks autonomously when commanded
-- [ ] Triple Whale / Klaviyo / Meta Ads first-class connectors (read KPIs on voice command)
-- [ ] WordPress content workflows (publish blog posts directly via Jarvis)
-- [ ] Per-task scheduling via heartbeat cron
+## Future Enhancements (next iteration)
+- [ ] ElevenLabs TTS integration (key slot ready, swap generateSpeech in tts.ts)
+- [ ] Picovoice Porcupine wake-word (key slot ready, replace VAD energy detector)
+- [ ] Triple Whale native connector (read KPIs on voice command via API)
+- [ ] Klaviyo native connector (flow performance, segments, email revenue)
+- [ ] Meta Ads connector via MCP (spend, ROAS, campaign status)
+- [ ] WordPress connector (publish posts, upload media via Jarvis voice)
+- [ ] Google Drive connector (read/create docs via Jarvis voice)
+- [ ] Holographic data overlay cards (float near orb when Jarvis speaks numbers)
+- [ ] Anomaly alert system with configurable thresholds
+- [ ] Weekly review auto-briefing (Fridays)
+- [ ] Mobile PWA (manifest.json + service worker + touch-to-talk)
+- [ ] Multi-display wall mode

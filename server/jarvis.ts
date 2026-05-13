@@ -435,4 +435,16 @@ export const jarvisRouter = router({
 
       return { status, statusCode, snippet };
     }),
+
+  setupSchedule: ownerProcedure
+    .mutation(async ({ ctx }) => {
+      const { ensureMorningBriefingJob } = await import("./jarvisSchedule");
+      const { COOKIE_NAME } = await import("../shared/const");
+      const { parse: parseCookieHeader } = await import("cookie");
+      const cookieHeader = ctx.req.headers.cookie ?? "";
+      const cookies = parseCookieHeader(cookieHeader);
+      const session = cookies[COOKIE_NAME] ?? "";
+      await ensureMorningBriefingJob(session);
+      return { ok: true };
+    }),
 });

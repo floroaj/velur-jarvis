@@ -1,8 +1,9 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { getLoginUrl } from "@/const";
+import { trpc } from "@/lib/trpc";
 import { Activity, Brain, Cpu, Database, KeyRound, LogOut, Mic, ShieldCheck, Wrench } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
 import { Link, useLocation } from "wouter";
 
 const navItems = [
@@ -16,6 +17,14 @@ const navItems = [
 export function JarvisLayout({ children }: { children: ReactNode }) {
   const { user, loading, isAuthenticated, logout } = useAuth();
   const [location] = useLocation();
+  const setupSchedule = trpc.jarvis.setupSchedule.useMutation();
+
+  // Register morning briefing cron on first authenticated load
+  useEffect(() => {
+    if (isAuthenticated && user?.role === "admin") {
+      setupSchedule.mutate();
+    }
+  }, [isAuthenticated, user?.role]);
 
   if (loading) {
     return (
