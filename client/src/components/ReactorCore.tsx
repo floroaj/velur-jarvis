@@ -2,10 +2,26 @@
  * 3D Reactor Core — Iron Man Arc Reactor inspired
  * Uses React Three Fiber + Drei + Postprocessing
  * Audio-reactive via amplitude prop
+ *
+ * Upgrades (vs. baseline):
+ *  - HDRI Environment for chrome reflections on rings
+ *  - Fresnel rim glow shader around the core
+ *  - Inner icosahedron wireframe (arc-reactor energy core)
+ *  - Slow auto-orbit camera for depth
+ *  - Vignette + ChromaticAberration post-FX (cinematic, tones down brightness at edges)
+ *  - Spiral energy-flow particles around the Y axis
+ *  - Toned-down exposure / bloom / env intensity for moodier look
  */
-import { Canvas, useFrame } from "@react-three/fiber";
-import { Bloom, EffectComposer } from "@react-three/postprocessing";
-import { useRef, useMemo } from "react";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import {
+  Bloom,
+  ChromaticAberration,
+  EffectComposer,
+  Vignette,
+} from "@react-three/postprocessing";
+import { BlendFunction } from "postprocessing";
+import { Environment } from "@react-three/drei";
+import { useMemo, useRef } from "react";
 import * as THREE from "three";
 import type { OrbState } from "./VoiceOrb";
 
@@ -17,8 +33,31 @@ const STATE_COLORS: Record<OrbState, [number, number, number]> = {
   speaking: [0.0, 0.9, 1.0],   // bright cyan
 };
 
+// Per-state glow profile. Idle / listening / thinking stay very dim even at
+// peak amplitude. Speaking ignites the core with strong amplitude-driven glow.
+type GlowProfile = { core: number; fresnel: number; inner: number; ampMul: number };
+const STATE_GLOW: Record<OrbState, GlowProfile> = {
+  idle:      { core: 0.04, fresnel: 0.08, inner: 0.18, ampMul: 0.35 },
+  listening: { core: 0.07, fresnel: 0.14, inner: 0.26, ampMul: 0.55 },
+  thinking:  { core: 0.09, fresnel: 0.18, inner: 0.30, ampMul: 0.70 },
+  speaking:  { core: 0.55, fresnel: 0.90, inner: 0.65, ampMul: 3.40 },
+};
+
 function lerp(a: number, b: number, t: number) {
   return a + (b - a) * t;
+}
+
+// ── Slow auto-orbit camera ────────────────────────────────────────────────────
+function CameraOrbit({ radius = 4.5, speed = 0.05 }: { radius?: number; speed?: number }) {
+  const { camera } = useThree();
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime();
+    camera.position.x = Math.sin(t * speed) * radius;
+    camera.position.z = Math.cos(t * speed) * radius;
+    camera.position.y = Math.sin(t * speed * 0.6) * 0.4;
+    camera.lookAt(0, 0, 0);
+  });
+  return null;
 }
 
 // ── Inner glowing sphere ──────────────────────────────────────────────────────
@@ -29,11 +68,13 @@ function CoreSphere({ state, amplitude }: { state: OrbState; amplitude: number }
 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
-    const pulse = 1 + amplitude * 0.35 + Math.sin(t * 2.5) * 0.02;
+    const pulse = 1 + amplitude * 0.32 + Math.sin(t * 2.5) * 0.02;
     meshRef.current.scale.setScalar(pulse);
     matRef.current.color.lerp(targetColor, 0.08);
     matRef.current.emissive.lerp(targetColor, 0.06);
-    matRef.current.emissiveIntensity = 1.2 + amplitude * 2.5;
+    const g = STATE_GLOW[state];
+    const target = g.core + amplitude * g.ampMul;
+    matRef.current.emissiveIntensity = lerp(matRef.current.emissiveIntensity, target, 0.08);
   });
 
   return (
@@ -43,11 +84,108 @@ function CoreSphere({ state, amplitude }: { state: OrbState; amplitude: number }
         ref={matRef}
         color={new THREE.Color(...STATE_COLORS[state])}
         emissive={new THREE.Color(...STATE_COLORS[state])}
-        emissiveIntensity={1.2}
-        roughness={0.1}
-        metalness={0.6}
+        emissiveIntensity={0.45}
+        roughness={0.35}
+        metalness={0.4}
         transparent
-        opacity={0.92}
+        opacity={0.72}
+      />
+    </mesh>
+  );
+}
+
+// ── Inner icosahedron wireframe (energy core) ─────────────────────────────────
+function InnerCore({ state, amplitude }: { state: OrbState; amplitude: number }) {
+  const meshRef = useRef<THREE.Mesh>(null!);
+  const matRef = useRef<THREE.MeshBasicMaterial>(null!);
+  const targetColor = useMemo(() => new THREE.Color(...STATE_COLORS[state]), [state]);
+
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime();
+    meshRef.current.rotation.x = -t * 0.32;
+    meshRef.current.rotation.y = t * 0.44;
+    meshRef.current.scale.setScalar(1 + amplitude * 0.5);
+    matRef.current.color.lerp(targetColor, 0.05);
+    const g = STATE_GLOW[state];
+    const target = g.inner + amplitude * g.ampMul * 0.25;
+    matRef.current.opacity = lerp(matRef.current.opacity, target, 0.1);
+  });
+
+  return (
+    <mesh ref={meshRef}>
+      <icosahedronGeometry args={[0.55, 1]} />
+      <meshBasicMaterial
+        ref={matRef}
+        color={new THREE.Color(...STATE_COLORS[state])}
+        wireframe
+        transparent
+        opacity={0.55}
+      />
+    </mesh>
+  );
+}
+
+// ── Fresnel Rim Shell ─────────────────────────────────────────────────────────
+const fresnelVertexShader = /* glsl */ `
+  varying vec3 vNormal;
+  varying vec3 vViewDir;
+  void main() {
+    vec4 worldPos = modelMatrix * vec4(position, 1.0);
+    vNormal = normalize(normalMatrix * normal);
+    vViewDir = normalize(cameraPosition - worldPos.xyz);
+    gl_Position = projectionMatrix * viewMatrix * worldPos;
+  }
+`;
+const fresnelFragmentShader = /* glsl */ `
+  uniform vec3 uColor;
+  uniform float uIntensity;
+  uniform float uPower;
+  varying vec3 vNormal;
+  varying vec3 vViewDir;
+  void main() {
+    float fresnel = pow(1.0 - max(dot(vNormal, vViewDir), 0.0), uPower);
+    gl_FragColor = vec4(uColor * uIntensity * fresnel, 1.0);
+  }
+`;
+
+function FresnelShell({ state, amplitude }: { state: OrbState; amplitude: number }) {
+  const matRef = useRef<THREE.ShaderMaterial>(null!);
+  const targetColor = useMemo(() => new THREE.Color(...STATE_COLORS[state]), [state]);
+
+  const uniforms = useMemo(
+    () => ({
+      uColor: { value: new THREE.Color(...STATE_COLORS[state]) },
+      uIntensity: { value: 0.9 },
+      uPower: { value: 2.6 },
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  useFrame(() => {
+    if (!matRef.current) return;
+    const c = matRef.current.uniforms.uColor.value as THREE.Color;
+    c.lerp(targetColor, 0.06);
+    const g = STATE_GLOW[state];
+    const target = g.fresnel + amplitude * g.ampMul * 0.85;
+    matRef.current.uniforms.uIntensity.value = lerp(
+      matRef.current.uniforms.uIntensity.value,
+      target,
+      0.1,
+    );
+  });
+
+  return (
+    <mesh>
+      <sphereGeometry args={[1.06, 64, 64]} />
+      <shaderMaterial
+        ref={matRef}
+        vertexShader={fresnelVertexShader}
+        fragmentShader={fresnelFragmentShader}
+        uniforms={uniforms}
+        transparent
+        depthWrite={false}
+        blending={THREE.AdditiveBlending}
       />
     </mesh>
   );
@@ -55,19 +193,10 @@ function CoreSphere({ state, amplitude }: { state: OrbState; amplitude: number }
 
 // ── Rotating ring ─────────────────────────────────────────────────────────────
 function Ring({
-  radius,
-  speed,
-  tiltX,
-  tiltZ,
-  state,
-  amplitude,
+  radius, speed, tiltX, tiltZ, state, amplitude,
 }: {
-  radius: number;
-  speed: number;
-  tiltX: number;
-  tiltZ: number;
-  state: OrbState;
-  amplitude: number;
+  radius: number; speed: number; tiltX: number; tiltZ: number;
+  state: OrbState; amplitude: number;
 }) {
   const meshRef = useRef<THREE.Mesh>(null!);
   const matRef = useRef<THREE.MeshStandardMaterial>(null!);
@@ -80,19 +209,19 @@ function Ring({
     meshRef.current.rotation.z = tiltZ;
     matRef.current.color.lerp(targetColor, 0.05);
     matRef.current.emissive.lerp(targetColor, 0.05);
-    matRef.current.emissiveIntensity = 0.8 + amplitude * 1.5;
+    matRef.current.emissiveIntensity = 0.55 + amplitude * 1.2;
   });
 
   return (
     <mesh ref={meshRef}>
-      <torusGeometry args={[radius, 0.025, 16, 120]} />
+      <torusGeometry args={[radius, 0.022, 16, 120]} />
       <meshStandardMaterial
         ref={matRef}
         color={new THREE.Color(...STATE_COLORS[state])}
         emissive={new THREE.Color(...STATE_COLORS[state])}
-        emissiveIntensity={0.8}
-        roughness={0.05}
-        metalness={0.9}
+        emissiveIntensity={0.55}
+        roughness={0.08}
+        metalness={0.95}
         transparent
         opacity={0.85}
       />
@@ -100,51 +229,50 @@ function Ring({
   );
 }
 
-// ── Particle field ────────────────────────────────────────────────────────────
+// ── Spiral energy particle field ──────────────────────────────────────────────
 function ParticleField({ state, amplitude }: { state: OrbState; amplitude: number }) {
-  const COUNT = 180;
+  const COUNT = 240;
   const posRef = useRef<THREE.BufferAttribute>(null!);
-  const meshRef = useRef<THREE.Points>(null!);
+  const matRef = useRef<THREE.PointsMaterial>(null!);
 
-  const { positions, velocities } = useMemo(() => {
+  const { positions, angles, radii, heights, speeds, hPhase } = useMemo(() => {
     const positions = new Float32Array(COUNT * 3);
-    const velocities = new Float32Array(COUNT * 3);
+    const angles = new Float32Array(COUNT);
+    const radii = new Float32Array(COUNT);
+    const heights = new Float32Array(COUNT);
+    const speeds = new Float32Array(COUNT);
+    const hPhase = new Float32Array(COUNT);
     for (let i = 0; i < COUNT; i++) {
-      const r = 1.6 + Math.random() * 1.2;
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1);
-      positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-      positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-      positions[i * 3 + 2] = r * Math.cos(phi);
-      velocities[i * 3] = (Math.random() - 0.5) * 0.002;
-      velocities[i * 3 + 1] = (Math.random() - 0.5) * 0.002;
-      velocities[i * 3 + 2] = (Math.random() - 0.5) * 0.002;
+      angles[i] = Math.random() * Math.PI * 2;
+      radii[i] = 1.6 + Math.random() * 1.4;
+      heights[i] = (Math.random() - 0.5) * 2.2;
+      speeds[i] = (Math.random() * 0.6 + 0.25) * (Math.random() > 0.5 ? 1 : -1);
+      hPhase[i] = Math.random() * Math.PI * 2;
     }
-    return { positions, velocities };
+    return { positions, angles, radii, heights, speeds, hPhase };
   }, []);
 
   const color = useMemo(() => new THREE.Color(...STATE_COLORS[state]), [state]);
 
-  useFrame(() => {
+  useFrame(({ clock }) => {
     if (!posRef.current) return;
+    const t = clock.getElapsedTime();
     const arr = posRef.current.array as Float32Array;
-    const boost = 1 + amplitude * 4;
+    const angularBoost = 1 + amplitude * 2;
     for (let i = 0; i < COUNT; i++) {
-      arr[i * 3] += velocities[i * 3] * boost;
-      arr[i * 3 + 1] += velocities[i * 3 + 1] * boost;
-      arr[i * 3 + 2] += velocities[i * 3 + 2] * boost;
-      const dist = Math.sqrt(arr[i * 3] ** 2 + arr[i * 3 + 1] ** 2 + arr[i * 3 + 2] ** 2);
-      if (dist > 3.2 || dist < 1.4) {
-        velocities[i * 3] *= -1;
-        velocities[i * 3 + 1] *= -1;
-        velocities[i * 3 + 2] *= -1;
-      }
+      angles[i] += speeds[i] * 0.005 * angularBoost;
+      const r = radii[i];
+      const h = heights[i] + Math.sin(t * 0.7 + hPhase[i]) * 0.18;
+      arr[i * 3] = Math.cos(angles[i]) * r;
+      arr[i * 3 + 1] = h;
+      arr[i * 3 + 2] = Math.sin(angles[i]) * r;
     }
     posRef.current.needsUpdate = true;
+    if (matRef.current) matRef.current.color.lerp(color, 0.05);
   });
 
   return (
-    <points ref={meshRef}>
+    <points>
       <bufferGeometry>
         <bufferAttribute
           ref={posRef}
@@ -153,11 +281,12 @@ function ParticleField({ state, amplitude }: { state: OrbState; amplitude: numbe
         />
       </bufferGeometry>
       <pointsMaterial
+        ref={matRef}
         color={color}
-        size={0.03}
+        size={0.028}
         sizeAttenuation
         transparent
-        opacity={0.7}
+        opacity={0.6}
       />
     </points>
   );
@@ -167,25 +296,42 @@ function ParticleField({ state, amplitude }: { state: OrbState; amplitude: numbe
 function Scene({ state, amplitude }: { state: OrbState; amplitude: number }) {
   return (
     <>
-      <ambientLight intensity={0.1} />
-      <pointLight position={[0, 0, 3]} intensity={2} color="#00e5ff" />
-      <pointLight position={[0, 0, -3]} intensity={1} color="#00e5ff" />
+      <CameraOrbit radius={4.5} speed={0.05} />
+
+      <Environment preset="city" background={false} environmentIntensity={0.25} />
+
+      <ambientLight intensity={0.05} />
+      <pointLight position={[0, 0, 3]} intensity={0.55} color="#00e5ff" />
+      <pointLight position={[0, 0, -3]} intensity={0.3} color="#00e5ff" />
 
       <CoreSphere state={state} amplitude={amplitude} />
+      <InnerCore state={state} amplitude={amplitude} />
+      <FresnelShell state={state} amplitude={amplitude} />
 
-      <Ring radius={1.35} speed={0.6} tiltX={0.4} tiltZ={0} state={state} amplitude={amplitude} />
-      <Ring radius={1.55} speed={-0.4} tiltX={-0.3} tiltZ={0.5} state={state} amplitude={amplitude} />
-      <Ring radius={1.75} speed={0.25} tiltX={0.8} tiltZ={-0.3} state={state} amplitude={amplitude} />
-      <Ring radius={1.95} speed={-0.18} tiltX={0.2} tiltZ={0.7} state={state} amplitude={amplitude} />
+      <Ring radius={1.35} speed={0.6}  tiltX={0.4}  tiltZ={0}    state={state} amplitude={amplitude} />
+      <Ring radius={1.55} speed={-0.4} tiltX={-0.3} tiltZ={0.5}  state={state} amplitude={amplitude} />
+      <Ring radius={1.75} speed={0.25} tiltX={0.8}  tiltZ={-0.3} state={state} amplitude={amplitude} />
+      <Ring radius={1.95} speed={-0.18} tiltX={0.2} tiltZ={0.7}  state={state} amplitude={amplitude} />
 
       <ParticleField state={state} amplitude={amplitude} />
 
       <EffectComposer>
         <Bloom
-          intensity={1.8}
-          luminanceThreshold={0.15}
-          luminanceSmoothing={0.9}
+          intensity={1.0}
+          luminanceThreshold={0.5}
+          luminanceSmoothing={0.85}
           mipmapBlur
+        />
+        <ChromaticAberration
+          blendFunction={BlendFunction.NORMAL}
+          offset={new THREE.Vector2(0.0018, 0.0018)}
+          radialModulation={false}
+          modulationOffset={0}
+        />
+        <Vignette
+          offset={0.15}
+          darkness={0.7}
+          eskil={false}
         />
       </EffectComposer>
     </>
@@ -209,7 +355,12 @@ export function ReactorCore({
     >
       <Canvas
         camera={{ position: [0, 0, 4.5], fov: 45 }}
-        gl={{ antialias: true, alpha: true }}
+        gl={{
+          antialias: true,
+          alpha: true,
+          toneMapping: THREE.ACESFilmicToneMapping,
+          toneMappingExposure: 0.65,
+        }}
         style={{ background: "transparent" }}
       >
         <Scene state={state} amplitude={amplitude} />
