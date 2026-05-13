@@ -265,10 +265,50 @@ export default function Home() {
     }
   };
 
+  // ── Audio chunk queue for sentence-by-sentence TTS playback ─────────────────
+  const audioQueueRef   = useRef<string[]>([]);
+  const playingRef      = useRef(false);
+
+  const playNextChunk = useCallback(() => {
+    if (playingRef.current || audioQueueRef.current.length === 0) return;
+    const url = audioQueueRef.current.shift()!;
+    playingRef.current = true;
+    setOrbState("speaking");
+    setTicker("Speaking…");
+    const audio = new Audio(url);
+    audioRef.current = audio;
+    audio.onended = () => {
+      playingRef.current = false;
+      audioRef.current = null;
+      if (audioQueueRef.current.length > 0) {
+        playNextChunk();
+      } else {
+        setOrbState("idle");
+        setTicker("");
+      }
+    };
+    audio.onerror = () => {
+      playingRef.current = false;
+      audioRef.current = null;
+      if (audioQueueRef.current.length > 0) playNextChunk();
+      else { setOrbState("idle"); setTicker(""); }
+    };
+    audio.play().catch(() => {
+      playingRef.current = false;
+      if (audioQueueRef.current.length > 0) playNextChunk();
+      else { setOrbState("idle"); setTicker(""); }
+    });
+  }, []); // eslint-disable-line
+
   // ── Send text message via SSE stream ───────────────────────────────────────
   const sendMessage = async (text: string) => {
     if (!text.trim()) return;
     setTextInput("");
+
+    // Reset audio queue
+    audioQueueRef.current = [];
+    playingRef.current = false;
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
 
     // Add user message
     const userId = crypto.randomUUID();
@@ -294,6 +334,7 @@ export default function Home() {
       const decoder = new TextDecoder();
       let fullReply = "";
       let activeTools: string[] = [];
+      let firstToken = true;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -304,13 +345,22 @@ export default function Home() {
           try {
             const event = JSON.parse(line.slice(6));
             if (event.type === "conversation_id") setConvId(event.conversationId);
+
             if (event.type === "token") {
+              if (firstToken) { firstToken = false; setOrbState("thinking"); }
               fullReply += event.token;
               setTicker(fullReply.slice(-80));
               setSession(prev => prev.map(m =>
                 m.id === assistantId ? { ...m, content: fullReply } : m,
               ));
             }
+
+            // ── Sentence-by-sentence TTS from audio_chunk events ──────────
+            if (event.type === "audio_chunk" && voiceOn && event.url) {
+              audioQueueRef.current.push(event.url as string);
+              playNextChunk(); // starts playing immediately if not already
+            }
+
             if (event.type === "tool_start") {
               activeTools = (event.tools as string).split(",").map((s: string) => s.trim());
               setTicker(`Using ${activeTools.join(", ")}…`);
@@ -323,25 +373,15 @@ export default function Home() {
             if (event.type === "done") {
               setSession(prev => prev.map(m =>
                 m.id === assistantId
-                  ? { ...m, content: event.reply as string, streaming: false, tools: activeTools.length ? activeTools : undefined }
+                  ? { ...m, content: event.reply as string || fullReply, streaming: false, tools: activeTools.length ? activeTools : undefined }
                   : m,
               ));
-              // TTS
-              if (voiceOn && event.reply) {
-                setOrbState("speaking");
-                setTicker("Speaking…");
-                try {
-                  const { url: audioUrl } = await speak.mutateAsync({ text: event.reply as string });
-                  const audio = new Audio(audioUrl);
-                  audioRef.current = audio;
-                  audio.onended = () => { setOrbState("idle"); setTicker(""); audioRef.current = null; };
-                  audio.onerror = () => { setOrbState("idle"); setTicker(""); };
-                  await audio.play();
-                } catch { setOrbState("idle"); setTicker(""); }
-              } else {
+              // If voice is off OR no audio chunks were queued, go idle immediately
+              if (!voiceOn || audioQueueRef.current.length === 0 && !playingRef.current) {
                 setOrbState("idle");
                 setTicker("");
               }
+              // Otherwise the playNextChunk chain will set idle when queue drains
             }
           } catch { /* ignore parse errors */ }
         }

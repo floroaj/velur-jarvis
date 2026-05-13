@@ -265,68 +265,159 @@ const normalizeResponseFormat = ({
   };
 };
 
+// ── Model & thinking budget ─────────────────────────────────────────────────────────────────────────
+// JARVIS_MODEL: override via env var. Default = gemini-2.5-flash (strongest available via forge gateway).
+// JARVIS_THINKING_BUDGET: thinking budget_tokens. Default = 4096.
+const JARVIS_MODEL = () => process.env.JARVIS_MODEL ?? "gemini-2.5-flash";
+const JARVIS_THINKING_BUDGET = () => parseInt(process.env.JARVIS_THINKING_BUDGET ?? "4096", 10);
+
+function buildPayload(
+  messages: Message[],
+  tools: Tool[] | undefined,
+  toolChoice: ToolChoice | undefined,
+  responseFormat: ResponseFormat | undefined,
+  response_format: ResponseFormat | undefined,
+  outputSchema: OutputSchema | undefined,
+  output_schema: OutputSchema | undefined,
+  stream: boolean,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    model: JARVIS_MODEL(),
+    messages: messages.map(normalizeMessage),
+    max_tokens: 32768,
+    thinking: { budget_tokens: JARVIS_THINKING_BUDGET() },
+  };
+  if (stream) payload.stream = true;
+  if (tools && tools.length > 0) payload.tools = tools;
+  const normalizedToolChoice = normalizeToolChoice(toolChoice, tools);
+  if (normalizedToolChoice) payload.tool_choice = normalizedToolChoice;
+  const normalizedResponseFormat = normalizeResponseFormat({
+    responseFormat, response_format, outputSchema, output_schema,
+  });
+  if (normalizedResponseFormat) payload.response_format = normalizedResponseFormat;
+  return payload;
+}
+
 export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   assertApiKey();
-
-  const {
-    messages,
-    tools,
-    toolChoice,
-    tool_choice,
-    outputSchema,
-    output_schema,
-    responseFormat,
-    response_format,
-  } = params;
-
-  const payload: Record<string, unknown> = {
-    model: "gemini-2.5-flash",
-    messages: messages.map(normalizeMessage),
-  };
-
-  if (tools && tools.length > 0) {
-    payload.tools = tools;
-  }
-
-  const normalizedToolChoice = normalizeToolChoice(
-    toolChoice || tool_choice,
-    tools
-  );
-  if (normalizedToolChoice) {
-    payload.tool_choice = normalizedToolChoice;
-  }
-
-  payload.max_tokens = 32768
-  payload.thinking = {
-    "budget_tokens": 128
-  }
-
-  const normalizedResponseFormat = normalizeResponseFormat({
-    responseFormat,
-    response_format,
-    outputSchema,
-    output_schema,
-  });
-
-  if (normalizedResponseFormat) {
-    payload.response_format = normalizedResponseFormat;
-  }
+  const { messages, tools, toolChoice, tool_choice, outputSchema, output_schema, responseFormat, response_format } = params;
+  const payload = buildPayload(messages, tools, toolChoice || tool_choice, responseFormat, response_format, outputSchema, output_schema, false);
 
   const response = await fetch(resolveApiUrl(), {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ENV.forgeApiKey}`,
-    },
+    headers: { "content-type": "application/json", authorization: `Bearer ${ENV.forgeApiKey}` },
     body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(
-      `LLM invoke failed: ${response.status} ${response.statusText} – ${errorText}`
-    );
+    throw new Error(`LLM invoke failed: ${response.status} ${response.statusText} – ${errorText}`);
   }
 
   return (await response.json()) as InvokeResult;
+}
+
+/**
+ * Streaming LLM call. Yields token chunks as they arrive from the forge SSE stream.
+ * Handles OpenAI-compatible SSE format: `data: {...}\n\n` lines.
+ * Tool calls are accumulated and returned as a final synthetic chunk with finish_reason="tool_calls".
+ */
+export async function* invokeLLMStream(
+  params: InvokeParams,
+): AsyncGenerator<{ token?: string; toolCalls?: ToolCall[]; finishReason?: string }> {
+  assertApiKey();
+  const { messages, tools, toolChoice, tool_choice, outputSchema, output_schema, responseFormat, response_format } = params;
+  const payload = buildPayload(messages, tools, toolChoice || tool_choice, responseFormat, response_format, outputSchema, output_schema, true);
+
+  const response = await fetch(resolveApiUrl(), {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${ENV.forgeApiKey}` },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`LLM stream failed: ${response.status} ${response.statusText} – ${errorText}`);
+  }
+
+  if (!response.body) throw new Error("LLM stream: no response body");
+
+  // Accumulate partial tool call arguments across chunks
+  const toolCallAccumulator: Map<number, { id: string; name: string; args: string }> = new Map();
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // Process complete SSE lines
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? ""; // Keep incomplete last line in buffer
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed === "data: [DONE]") continue;
+        if (!trimmed.startsWith("data: ")) continue;
+
+        let chunk: {
+          choices?: Array<{
+            delta?: {
+              content?: string;
+              tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }>;
+            };
+            finish_reason?: string | null;
+          }>;
+        };
+        try {
+          chunk = JSON.parse(trimmed.slice(6));
+        } catch {
+          continue; // Skip malformed chunks
+        }
+
+        const choice = chunk.choices?.[0];
+        if (!choice) continue;
+
+        const delta = choice.delta;
+        const finishReason = choice.finish_reason;
+
+        // Accumulate tool call deltas
+        if (delta?.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const existing = toolCallAccumulator.get(tc.index) ?? { id: "", name: "", args: "" };
+            if (tc.id) existing.id = tc.id;
+            if (tc.function?.name) existing.name += tc.function.name;
+            if (tc.function?.arguments) existing.args += tc.function.arguments;
+            toolCallAccumulator.set(tc.index, existing);
+          }
+        }
+
+        // Yield text token
+        if (delta?.content) {
+          yield { token: delta.content };
+        }
+
+        // On finish, yield tool calls if any
+        if (finishReason === "tool_calls" || (finishReason === "stop" && toolCallAccumulator.size > 0)) {
+          const toolCalls: ToolCall[] = Array.from(toolCallAccumulator.entries())
+            .sort(([a], [b]) => a - b)
+            .map(([, tc]) => ({
+              id: tc.id || `call_${Math.random().toString(36).slice(2)}`,
+              type: "function" as const,
+              function: { name: tc.name, arguments: tc.args },
+            }));
+          yield { toolCalls, finishReason };
+          toolCallAccumulator.clear();
+        } else if (finishReason === "stop") {
+          yield { finishReason };
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }

@@ -7,7 +7,7 @@
 import type { Application } from "express";
 import { sdk } from "./_core/sdk";
 import { ENV } from "./_core/env";
-import { invokeLLM, type Message, type Tool } from "./_core/llm";
+import { invokeLLM, invokeLLMStream, type Message, type Tool, type ToolCall } from "./_core/llm";
 import {
   appendMessage,
   createConversation,
@@ -22,6 +22,8 @@ import {
 import { decryptSecret } from "./_core/crypto";
 import { generateSpeech } from "./_core/tts";
 import { notifyOwner } from "./_core/notification";
+import { SentenceAccumulator } from "./_core/sentenceSplitter";
+import { withCache } from "./_core/toolCache";
 
 // ── Tool definitions exposed to the LLM ──────────────────────────────────────
 
@@ -233,55 +235,64 @@ const JARVIS_TOOLS: Tool[] = [
 
 // ── Tool executors ────────────────────────────────────────────────────────────
 
+async function executeToolCallRaw(
+  toolName: string,
+  args: Record<string, unknown>,
+  userId: number,
+): Promise<string> {
+  switch (toolName) {
+    case "get_triple_whale_summary":
+      return fetchTripleWhaleSummary(args.days as number | undefined, userId);
+    case "get_klaviyo_summary":
+      return fetchKlaviyoSummary(args.days as number | undefined, userId);
+    case "get_clarity_summary":
+      return fetchClaritySummary(args.days as number | undefined, userId);
+    case "get_meta_ads_summary":
+      return fetchMetaAdsSummary(args.days as number | undefined);
+    case "list_tasks":
+      return listTasksTool(userId);
+    case "run_task":
+      return runTaskTool(args.name as string, userId);
+    case "get_woocommerce_summary":
+      return fetchWooCommerceSummary(args.days as number | undefined);
+    case "get_woocommerce_orders":
+      return fetchWooCommerceOrders(args.status as string | undefined, args.limit as number | undefined);
+    case "get_woocommerce_products":
+      return fetchWooCommerceProducts(args.search as string | undefined, args.limit as number | undefined);
+    case "get_woocommerce_customers":
+      return fetchWooCommerceCustomers(args.days as number | undefined, args.limit as number | undefined);
+    case "update_woocommerce_product_stock":
+      return updateWooCommerceStock(
+        args.product_id as number | undefined,
+        args.product_name as string | undefined,
+        args.stock_quantity as number,
+      );
+    case "create_wordpress_post":
+      return createWordPressPost(
+        args.title as string,
+        args.content as string,
+        (args.status as string) ?? "draft",
+        (args.categories as number[]) ?? [],
+      );
+    case "upload_wordpress_media":
+      return uploadWordPressMedia(
+        args.image_url as string,
+        args.filename as string,
+        (args.alt_text as string) ?? "",
+      );
+    default:
+      return `Unknown tool: ${toolName}`;
+  }
+}
+
+/** Cached wrapper around executeToolCallRaw. Side-effect tools bypass the cache. */
 async function executeToolCall(
   toolName: string,
   args: Record<string, unknown>,
   userId: number,
 ): Promise<string> {
   try {
-    switch (toolName) {
-      case "get_triple_whale_summary":
-        return await fetchTripleWhaleSummary(args.days as number | undefined, userId);
-      case "get_klaviyo_summary":
-        return await fetchKlaviyoSummary(args.days as number | undefined, userId);
-      case "get_clarity_summary":
-        return await fetchClaritySummary(args.days as number | undefined, userId);
-      case "get_meta_ads_summary":
-        return await fetchMetaAdsSummary(args.days as number | undefined);
-      case "list_tasks":
-        return await listTasksTool(userId);
-      case "run_task":
-        return await runTaskTool(args.name as string, userId);
-      case "get_woocommerce_summary":
-        return await fetchWooCommerceSummary(args.days as number | undefined);
-      case "get_woocommerce_orders":
-        return await fetchWooCommerceOrders(args.status as string | undefined, args.limit as number | undefined);
-      case "get_woocommerce_products":
-        return await fetchWooCommerceProducts(args.search as string | undefined, args.limit as number | undefined);
-      case "get_woocommerce_customers":
-        return await fetchWooCommerceCustomers(args.days as number | undefined, args.limit as number | undefined);
-      case "update_woocommerce_product_stock":
-        return await updateWooCommerceStock(
-          args.product_id as number | undefined,
-          args.product_name as string | undefined,
-          args.stock_quantity as number,
-        );
-      case "create_wordpress_post":
-        return await createWordPressPost(
-          args.title as string,
-          args.content as string,
-          (args.status as string) ?? "draft",
-          (args.categories as number[]) ?? [],
-        );
-      case "upload_wordpress_media":
-        return await uploadWordPressMedia(
-          args.image_url as string,
-          args.filename as string,
-          (args.alt_text as string) ?? "",
-        );
-      default:
-        return `Unknown tool: ${toolName}`;
-    }
+    return await withCache(toolName, args, () => executeToolCallRaw(toolName, args, userId));
   } catch (err) {
     return `Error executing ${toolName}: ${err instanceof Error ? err.message : String(err)}`;
   }
@@ -447,22 +458,41 @@ async function runTaskTool(name: string, userId: number): Promise<string> {
 const WOO_BASE = "https://velur.de/wp-json/wc/v3";
 
 /**
- * Build WooCommerce Basic Auth header.
- * Priority: WORDPRESS_APP_PASSWORD env var → WP_USER/WP_APP_PASS env vars → fallback to WP app password env.
- * Credentials are NEVER hardcoded — they must be set via environment secrets.
+ * Build WordPress/WooCommerce Basic Auth header.
+ * Priority:
+ *   1. Vault labels "WordPress_User" + "WordPress_AppPassword" (set via /vault UI)
+ *   2. WORDPRESS_APP_PASSWORD env var (legacy fallback)
+ * Returns empty string if no credentials found.
  */
+async function getWooAuthAsync(userId?: number): Promise<string> {
+  // 1. Try vault labels
+  if (userId !== undefined) {
+    const [userRow, passRow] = await Promise.all([
+      getApiKeyByLabel("WordPress_User", userId),
+      getApiKeyByLabel("WordPress_AppPassword", userId),
+    ]);
+    if (userRow && passRow) {
+      const wpUser = decryptSecret(userRow.cipherText);
+      const wpPass = decryptSecret(passRow.cipherText);
+      return "Basic " + Buffer.from(`${wpUser}:${wpPass}`).toString("base64");
+    }
+  }
+  // 2. Legacy env var fallback
+  const appPass = process.env.WORDPRESS_APP_PASSWORD ?? "";
+  if (appPass) {
+    const cred = appPass.includes(":") ? appPass : `floroaj:${appPass}`;
+    return "Basic " + Buffer.from(cred).toString("base64");
+  }
+  return "";
+}
+
+/** Sync version for non-async contexts — uses env var only. */
 function getWooAuth(): string {
   const appPass = process.env.WORDPRESS_APP_PASSWORD ?? "";
   if (appPass) {
-    // If already in user:pass format, use as-is; otherwise prepend WP username
-    const cred = appPass.includes(":") ? appPass : `${process.env.WP_USER ?? "floroaj"}:${appPass}`;
+    const cred = appPass.includes(":") ? appPass : `floroaj:${appPass}`;
     return "Basic " + Buffer.from(cred).toString("base64");
   }
-  const user = process.env.WP_USER ?? "";
-  const pass = process.env.WP_APP_PASS ?? "";
-  if (user && pass) return "Basic " + Buffer.from(`${user}:${pass}`).toString("base64");
-  const vaultCred = process.env.WOOCOMMERCE_AUTH ?? "";
-  if (vaultCred) return "Basic " + Buffer.from(vaultCred).toString("base64");
   return "";
 }
 
@@ -579,11 +609,11 @@ async function createWordPressPost(
   content: string,
   status: string,
   categories: number[],
+  userId?: number,
 ): Promise<string> {
   const wpUrl = "https://velur.de/wp-json/wp/v2/posts";
-  // Use same auth as WooCommerce (WORDPRESS_APP_PASSWORD env var)
-  const auth = getWooAuth();
-  if (!auth) return "WordPress credentials not configured. Please add WORDPRESS_APP_PASSWORD to environment secrets.";
+  const auth = await getWooAuthAsync(userId);
+  if (!auth) return "WordPress Credentials nicht im Vault. Bitte unter /vault hinterlegen (Labels: WordPress_User und WordPress_AppPassword).";
 
   const resp = await fetch(wpUrl, {
     method: "POST",
@@ -605,9 +635,10 @@ async function uploadWordPressMedia(
   imageUrl: string,
   filename: string,
   altText: string,
+  userId?: number,
 ): Promise<string> {
-  const auth = getWooAuth();
-  if (!auth) return "WordPress credentials not configured. Please add WORDPRESS_APP_PASSWORD to environment secrets.";
+  const auth = await getWooAuthAsync(userId);
+  if (!auth) return "WordPress Credentials nicht im Vault. Bitte unter /vault hinterlegen (Labels: WordPress_User und WordPress_AppPassword).";
 
   try {
     // Fetch the image from the source URL
@@ -762,7 +793,7 @@ export function registerJarvisStreamRoute(app: Application) {
         llmMessages.push({ role: m.role as "user" | "assistant", content: m.content });
       }
 
-      // Tool-calling loop (max 5 iterations to prevent infinite loops)
+      // ── Real streaming tool-calling loop ────────────────────────────────────
       let fullReply = "";
       let iteration = 0;
       const MAX_ITER = 5;
@@ -770,68 +801,109 @@ export function registerJarvisStreamRoute(app: Application) {
       while (iteration < MAX_ITER) {
         iteration++;
 
-        // Invoke LLM — non-streaming for now, but we stream tokens to client
-        // by simulating word-by-word delivery after the full response arrives.
-        // This gives the "streaming" UX while using the existing invokeLLM helper.
-        const result = await invokeLLM({
+        // ── Non-final iterations (tool-calling): use non-streaming invokeLLM
+        // ── Final iteration (text response): use real token streaming
+        // We detect tool calls first; if none, we re-run with streaming.
+        // To avoid double-calling, we use streaming from the start and
+        // accumulate tool calls if present, or stream tokens if not.
+
+        const sentenceAccum = new SentenceAccumulator();
+        const pendingTtsPromises: Promise<void>[] = [];
+        let accumulatedToolCalls: ToolCall[] = [];
+        let hasToolCalls = false;
+
+        const stream = invokeLLMStream({
           messages: llmMessages,
           tools: useTool ? JARVIS_TOOLS : undefined,
           toolChoice: useTool ? "auto" : undefined,
         });
 
-        const choice = result.choices?.[0];
-        if (!choice) break;
+        for await (const chunk of stream) {
+          if (chunk.token) {
+            // Stream token to client immediately
+            sseWrite(res, { type: "token", token: chunk.token });
+            fullReply += chunk.token;
 
-        const toolCalls = choice.message.tool_calls;
+            // Sentence-boundary TTS: accumulate and fire TTS per sentence
+            const completedSentences = sentenceAccum.push(chunk.token);
+            for (const sentence of completedSentences) {
+              const s = sentence.trim();
+              if (s.length < 3) continue;
+              // Fire TTS in parallel, send audio_chunk when ready
+              const ttsPromise = generateSpeech({ text: s })
+                .then(result => {
+                  sseWrite(res, { type: "audio_chunk", url: result.url, sentence: s });
+                })
+                .catch(err => {
+                  console.warn("[JarvisStream] TTS error for sentence:", err);
+                });
+              pendingTtsPromises.push(ttsPromise);
+            }
+          }
 
-        if (toolCalls && toolCalls.length > 0) {
-          // Announce tool usage
-          const toolNames = toolCalls.map(tc => tc.function.name).join(", ");
+          if (chunk.toolCalls) {
+            hasToolCalls = true;
+            accumulatedToolCalls = chunk.toolCalls;
+          }
+        }
+
+        // Flush any remaining partial sentence for TTS
+        const finalSentences = sentenceAccum.finalize();
+        for (const sentence of finalSentences) {
+          const s = sentence.trim();
+          if (s.length < 3) continue;
+          const ttsPromise = generateSpeech({ text: s })
+            .then(result => {
+              sseWrite(res, { type: "audio_chunk", url: result.url, sentence: s });
+            })
+            .catch(err => {
+              console.warn("[JarvisStream] TTS error for final sentence:", err);
+            });
+          pendingTtsPromises.push(ttsPromise);
+        }
+
+        if (hasToolCalls && accumulatedToolCalls.length > 0) {
+          // Reset fullReply — tool-call turn doesn't produce final text
+          fullReply = "";
+
+          const toolNames = accumulatedToolCalls.map(tc => tc.function.name).join(", ");
           sseWrite(res, { type: "tool_start", tools: toolNames });
 
           // Add assistant tool-call message to context
           llmMessages.push({
             role: "assistant",
-            content: choice.message.content as string ?? "",
-            ...(choice.message as any),
-          });
+            content: "",
+            tool_calls: accumulatedToolCalls,
+          } as any);
 
-          // Execute each tool
-          for (const tc of toolCalls) {
-            let args: Record<string, unknown> = {};
-            try { args = JSON.parse(tc.function.arguments); } catch { /* ignore */ }
+          // ── Parallel tool execution ────────────────────────────────────────
+          const toolResults = await Promise.all(
+            accumulatedToolCalls.map(async (tc) => {
+              let args: Record<string, unknown> = {};
+              try { args = JSON.parse(tc.function.arguments); } catch { /* ignore */ }
+              sseWrite(res, { type: "tool_call", name: tc.function.name, args });
+              const toolResult = await executeToolCall(tc.function.name, args, user.id);
+              sseWrite(res, { type: "tool_result", name: tc.function.name, result: toolResult.slice(0, 500) });
+              return { tc, toolResult };
+            })
+          );
 
-            sseWrite(res, { type: "tool_call", name: tc.function.name, args });
-            const toolResult = await executeToolCall(tc.function.name, args, user.id);
-            sseWrite(res, { type: "tool_result", name: tc.function.name, result: toolResult.slice(0, 500) });
-
+          // Add all tool results to context
+          for (const { tc, toolResult } of toolResults) {
             llmMessages.push({
               role: "tool",
               content: toolResult,
               tool_call_id: tc.id,
             });
           }
-          // Continue loop to get final answer
-          continue;
+
+          // Wait for any TTS that fired during this turn (unlikely but safe)
+          await Promise.allSettled(pendingTtsPromises);
+          continue; // Next iteration for final answer
         }
 
-        // Final text response — stream word by word
-        const content = (() => {
-          const c = choice.message.content;
-          if (typeof c === "string") return c;
-          if (Array.isArray(c)) return c.map((p: any) => p.type === "text" ? p.text : "").join("");
-          return "";
-        })();
-
-        fullReply = content;
-
-        // Simulate streaming: emit words with small delay
-        const words = content.split(/(\s+)/);
-        for (const word of words) {
-          sseWrite(res, { type: "token", token: word });
-          // Small artificial delay for streaming feel (5ms per word)
-          await new Promise(r => setTimeout(r, 5));
-        }
+        // Wait for all sentence TTS to complete before sending done
+        await Promise.allSettled(pendingTtsPromises);
         break;
       }
 

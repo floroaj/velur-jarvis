@@ -72,14 +72,15 @@
 - [x] Total: 16 tests passing
 
 ## Future Enhancements (next iteration)
-- [ ] ElevenLabs TTS integration (key slot ready — awaiting API key from Florian)
-- [ ] Picovoice Porcupine wake-word (key slot ready — awaiting API key from Florian)
-- [ ] Triple Whale native connector (read KPIs on voice command via API)
-- [ ] Klaviyo native connector (flow performance, segments, email revenue)
-- [ ] Meta Ads connector via MCP (spend, ROAS, campaign status)
-- [x] WordPress connector (create/publish posts via voice — create_wordpress_post tool)
-- [ ] Google Drive connector (read/create docs via Jarvis voice) [Future]
-- [ ] Holographic data overlay cards (float near orb when Jarvis speaks numbers) [Future]
+- [ ] ElevenLabs TTS integration — BLOCKED: awaiting ElevenLabs API key from Florian
+- [ ] Picovoice Porcupine wake-word — BLOCKED: awaiting Picovoice API key from Florian
+- [x] Triple Whale connector (fetchTripleWhaleSummary: vault key → orders/attribution API, 2 fallback endpoints)
+- [x] Klaviyo connector (fetchKlaviyoSummary: vault key → metrics API with date filter)
+- [x] Clarity connector (fetchClaritySummary: vault key → projects API with date range)
+- [x] Meta Ads connector (fetchMetaAdsSummary: MCP CLI → get_ad_accounts + get_insights with spend/ROAS/CPC)
+- [x] WordPress connector (tools: create_wordpress_post + upload_wordpress_media)
+- [ ] Google Drive connector [Future — no key yet]
+- [ ] Holographic data overlay cards [Future]
 - [ ] Anomaly alert system with configurable thresholds [Future]
 - [x] Weekly review auto-briefing (Fridays at 10:00 CEST via heartbeat cron)
 - [x] Mobile PWA (manifest.json + service worker + Apple meta tags)
@@ -105,3 +106,19 @@
 - [x] WooCommerce credentials secured via WORDPRESS_APP_PASSWORD env secret (no hardcoded creds)
 - [x] Tool: get_woocommerce_customers (Neukunden, Lifetime Value)
 - [x] Tool: update_woocommerce_product_stock (Lagerstand per Sprache anpassen)
+
+## Performance & Intelligence Upgrade – Phase 1
+- [x] LLM model upgrade: JARVIS_MODEL env var, default gemini-2.5-flash (strongest available via forge)
+- [x] Thinking budget: JARVIS_THINKING_BUDGET env var, default 4096 tokens
+- [x] invokeLLMStream: real token streaming via forge SSE format (AsyncGenerator<{token?,toolCalls?}>)
+- [x] Replace fake word-loop in jarvisStream.ts with real token stream
+- [x] Sentence-boundary detection during streaming (handles z.B., Dr., etc.) via SentenceAccumulator
+- [x] Sentence-by-sentence TTS: audio_chunk SSE events sent as each sentence completes
+- [x] Frontend audio queue: sequential playback of audio_chunk events (playNextChunk chain)
+- [x] Parallel tool execution via Promise.all in tool-calling loop
+- [x] Tool-result cache: server/_core/toolCache.ts (sha256 key, per-tool TTL, side-effect bypass)
+- [x] WordPress credentials from Vault (WordPress_User + WordPress_AppPassword labels)
+- [x] Tests: toolCache hit/miss/side-effect-bypass/key-determinism (4 tests)
+- [x] Tests: sentence splitter abbreviations, boundaries, finalize, edge cases (5 tests)
+- [x] Tests: SSE format + audio_chunk event shape (2 tests)
+- [x] All 30 tests green (5 test files)
