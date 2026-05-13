@@ -1,0 +1,16 @@
+{
+  "query": "SELECT openId, email, name, role FROM users WHERE email = 'floriandkk@gmail.com' LIMIT 1;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 4KMNf5EVussCZuj.7856c3006a4d --database b7yUkEfrrhhQ7XYooJ3zKf --execute SELECT openId, email, name, role FROM users WHERE email = 'floriandkk@gmail.com' LIMIT 1;",
+  "rows": [
+    {
+      "openId": "LDGq2ymZMpJNbrpSoXEuTJ",
+      "email": "floriandkk@gmail.com",
+      "name": "Florian Mayer",
+      "role": "admin"
+    }
+  ],
+  "messages": [],
+  "stdout": "openId\temail\tname\trole\nLDGq2ymZMpJNbrpSoXEuTJ\tfloriandkk@gmail.com\tFlorian Mayer\tadmin\n",
+  "stderr": "",
+  "execution_time_ms": 271
+}

@@ -145,6 +145,13 @@
 - [x] Home.tsx: wrap return JSX in <JarvisLayout> (header missing on live)
 - [x] ReactorCore.tsx: CoreSphere envMapIntensity={0} (idle too bright from RoomEnvironment reflection)
 
+## OWNER_OPEN_ID Production Fix
+- [x] Read openId from users table for floriandkk@gmail.com (LDGq2ymZMpJNbrpSoXEuTJ)
+- [x] ownerProcedure: add admin-role fallback when OWNER_OPEN_ID not injected by platform
+- [x] jarvisStream.ts: all 3 owner checks updated with same fallback
+- [x] db.ts: getUserByRole() helper added for admin fallback lookup
+- [x] 0 TypeScript errors, 39/39 tests green
+
 ## Flicker Fix
 - [x] ReactorCore: accept amplitudeRef (MutableRefObject) instead of amplitude number to avoid re-renders
 - [x] ReactorCore: all sub-components (CoreSphere, InnerCore, FresnelShell, Ring, ParticleField, Scene) updated to use amplitudeRef

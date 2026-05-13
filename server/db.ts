@@ -74,6 +74,14 @@ export async function getUserByOpenId(openId: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+/** Fallback: find the first admin user when OWNER_OPEN_ID env is not available */
+export async function getUserByRole(role: "admin" | "user") {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(users).where(eq(users.role, role)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
 /* Conversations */
 export async function listConversations(userId: number) {
   const db = await getDb();

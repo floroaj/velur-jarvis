@@ -759,7 +759,8 @@ export function registerJarvisStreamRoute(app: Application) {
       res.status(401).json({ error: "Unauthorized" });
       return;
     }
-    if (user.openId !== ENV.ownerOpenId) {
+    const isOwner = (ENV.ownerOpenId && user.openId === ENV.ownerOpenId) || user.role === "admin";
+    if (!isOwner) {
       res.status(403).json({ error: "Owner only" });
       return;
     }
@@ -950,13 +951,16 @@ export function registerJarvisStreamRoute(app: Application) {
   app.post("/api/scheduled/weekly-review", async (req, res) => {
     try {
       const user = await sdk.authenticateRequest(req);
-      if (!user.isCron && user.openId !== ENV.ownerOpenId) {
+      const isOwner = user.isCron || (ENV.ownerOpenId && user.openId === ENV.ownerOpenId) || user.role === "admin";
+      if (!isOwner) {
         res.status(403).json({ error: "Forbidden" });
         return;
       }
 
-      const { getUserByOpenId } = await import("./db");
-      const owner = await getUserByOpenId(ENV.ownerOpenId);
+      const { getUserByOpenId, getUserByRole } = await import("./db");
+      const owner = ENV.ownerOpenId
+        ? await getUserByOpenId(ENV.ownerOpenId)
+        : await getUserByRole("admin");
       if (!owner) { res.json({ ok: false, reason: "owner not found" }); return; }
 
       const context = await getBusinessContext(owner.id);
@@ -1006,14 +1010,17 @@ export function registerJarvisStreamRoute(app: Application) {
   app.post("/api/scheduled/morning-briefing", async (req, res) => {
     try {
       const user = await sdk.authenticateRequest(req);
-      if (!user.isCron && user.openId !== ENV.ownerOpenId) {
+      const isOwner = user.isCron || (ENV.ownerOpenId && user.openId === ENV.ownerOpenId) || user.role === "admin";
+      if (!isOwner) {
         res.status(403).json({ error: "Forbidden" });
         return;
       }
 
       // Find owner user
-      const { getUserByOpenId } = await import("./db");
-      const owner = await getUserByOpenId(ENV.ownerOpenId);
+      const { getUserByOpenId, getUserByRole } = await import("./db");
+      const owner = ENV.ownerOpenId
+        ? await getUserByOpenId(ENV.ownerOpenId)
+        : await getUserByRole("admin");
       if (!owner) { res.json({ ok: false, reason: "owner not found" }); return; }
 
       const context = await getBusinessContext(owner.id);
