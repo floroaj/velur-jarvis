@@ -145,6 +145,13 @@
 - [x] Home.tsx: wrap return JSX in <JarvisLayout> (header missing on live)
 - [x] ReactorCore.tsx: CoreSphere envMapIntensity={0} (idle too bright from RoomEnvironment reflection)
 
+## Flicker Fix
+- [x] ReactorCore: accept amplitudeRef (MutableRefObject) instead of amplitude number to avoid re-renders
+- [x] ReactorCore: all sub-components (CoreSphere, InnerCore, FresnelShell, Ring, ParticleField, Scene) updated to use amplitudeRef
+- [x] Home.tsx: pass amplitudeRef instead of amplitude state to ReactorCore
+- [x] Home.tsx: remove motion.div wrapper around ReactorCore (it's already fixed-position)
+- [x] useAudioAmplitude: return ref instead of state to avoid 60fps React re-renders
+
 ## Live-Deploy PR — 4 Fixes
 - [x] Home.tsx: JarvisLayout wrapper (header missing on live)
 - [x] ReactorCore.tsx: CoreSphere envMapIntensity={0}

@@ -152,7 +152,8 @@ export default function Home() {
     try { return sessionStorage.getItem("jarvis_booted") === "1"; } catch { return false; }
   });
   const [orbState, setOrbState]     = useState<OrbState>("idle");
-  const [amplitude, setAmplitude]   = useState(0);
+  // amplitudeRef is written by useAudioAmplitude at 60fps without triggering re-renders
+  const amplitudeRef = useRef(0);
   const [voiceOn, setVoiceOn]       = useState(true);
   const [vadOn, setVadOn]           = useState(false);
   const [handsFree, setHandsFree]   = useState(false);
@@ -169,16 +170,28 @@ export default function Home() {
   const streamRef        = useRef<MediaStream | null>(null);
   const sessionEndRef    = useRef<HTMLDivElement>(null);
 
-  // Amplitude from mic stream
-  const micAmplitude = useAudioAmplitude(streamRef.current, orbState === "listening");
-  // Amplitude from TTS audio element
-  const ttsAmplitude = useAudioAmplitude(audioRef.current, orbState === "speaking");
+  // Amplitude from mic stream (ref-based, no re-renders)
+  const micAmplitudeRef = useAudioAmplitude(streamRef.current, orbState === "listening");
+  // Amplitude from TTS audio element (ref-based, no re-renders)
+  const ttsAmplitudeRef = useAudioAmplitude(audioRef.current, orbState === "speaking");
 
+  // Keep amplitudeRef pointing at the active source — no setState, no re-renders
   useEffect(() => {
-    if (orbState === "listening") setAmplitude(micAmplitude);
-    else if (orbState === "speaking") setAmplitude(ttsAmplitude);
-    else setAmplitude(0);
-  }, [orbState, micAmplitude, ttsAmplitude]);
+    if (orbState === "listening") {
+      // Proxy: forward micAmplitudeRef updates into amplitudeRef each frame
+      let raf: number;
+      const sync = () => { amplitudeRef.current = micAmplitudeRef.current; raf = requestAnimationFrame(sync); };
+      raf = requestAnimationFrame(sync);
+      return () => cancelAnimationFrame(raf);
+    } else if (orbState === "speaking") {
+      let raf: number;
+      const sync = () => { amplitudeRef.current = ttsAmplitudeRef.current; raf = requestAnimationFrame(sync); };
+      raf = requestAnimationFrame(sync);
+      return () => cancelAnimationFrame(raf);
+    } else {
+      amplitudeRef.current = 0;
+    }
+  }, [orbState, micAmplitudeRef, ttsAmplitudeRef]);
 
   // Scroll session log to bottom
   useEffect(() => {
@@ -417,14 +430,8 @@ export default function Home() {
           }}
         />
 
-        {/* Core */}
-        <motion.div
-          className="relative"
-          animate={{ scale: booted ? 1 : 0.85, opacity: booted ? 1 : 0 }}
-          transition={{ duration: 0.8, ease: [0.23, 1, 0.32, 1] }}
-        >
-          <ReactorCore state={orbState} amplitude={amplitude} />
-        </motion.div>
+        {/* Core — fixed-position fullscreen canvas, no wrapper needed */}
+        <ReactorCore state={orbState} amplitudeRef={amplitudeRef} />
 
         {/* State label + ticker */}
         <motion.div

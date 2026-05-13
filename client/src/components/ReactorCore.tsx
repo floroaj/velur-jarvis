@@ -20,7 +20,7 @@ import {
   Vignette,
 } from "@react-three/postprocessing";
 import { BlendFunction } from "postprocessing";
-import { useMemo, useRef, useEffect } from "react";
+import React, { useMemo, useRef, useEffect } from "react";
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import type { OrbState } from "./VoiceOrb";
@@ -81,12 +81,13 @@ function CameraOrbit({ radius = 4.5, speed = 0.05 }: { radius?: number; speed?: 
 }
 
 // ── Inner glowing sphere ──────────────────────────────────────────────────────
-function CoreSphere({ state, amplitude }: { state: OrbState; amplitude: number }) {
+function CoreSphere({ state, amplitudeRef }: { state: OrbState; amplitudeRef: React.MutableRefObject<number> }) {
   const meshRef = useRef<THREE.Mesh>(null!);
   const matRef = useRef<THREE.MeshStandardMaterial>(null!);
   const targetColor = useMemo(() => new THREE.Color(...STATE_COLORS[state]), [state]);
 
   useFrame(({ clock }) => {
+    const amplitude = amplitudeRef.current;
     const t = clock.getElapsedTime();
     const pulse = 1 + amplitude * 0.32 + Math.sin(t * 2.5) * 0.02;
     meshRef.current.scale.setScalar(pulse);
@@ -116,12 +117,13 @@ function CoreSphere({ state, amplitude }: { state: OrbState; amplitude: number }
 }
 
 // ── Inner icosahedron wireframe (energy core) ─────────────────────────────────
-function InnerCore({ state, amplitude }: { state: OrbState; amplitude: number }) {
+function InnerCore({ state, amplitudeRef }: { state: OrbState; amplitudeRef: React.MutableRefObject<number> }) {
   const meshRef = useRef<THREE.Mesh>(null!);
   const matRef = useRef<THREE.MeshBasicMaterial>(null!);
   const targetColor = useMemo(() => new THREE.Color(...STATE_COLORS[state]), [state]);
 
   useFrame(({ clock }) => {
+    const amplitude = amplitudeRef.current;
     const t = clock.getElapsedTime();
     meshRef.current.rotation.x = -t * 0.32;
     meshRef.current.rotation.y = t * 0.44;
@@ -169,7 +171,7 @@ const fresnelFragmentShader = /* glsl */ `
   }
 `;
 
-function FresnelShell({ state, amplitude }: { state: OrbState; amplitude: number }) {
+function FresnelShell({ state, amplitudeRef }: { state: OrbState; amplitudeRef: React.MutableRefObject<number> }) {
   const matRef = useRef<THREE.ShaderMaterial>(null!);
   const targetColor = useMemo(() => new THREE.Color(...STATE_COLORS[state]), [state]);
 
@@ -185,6 +187,7 @@ function FresnelShell({ state, amplitude }: { state: OrbState; amplitude: number
 
   useFrame(() => {
     if (!matRef.current) return;
+    const amplitude = amplitudeRef.current;
     const c = matRef.current.uniforms.uColor.value as THREE.Color;
     c.lerp(targetColor, 0.06);
     const g = STATE_GLOW[state];
@@ -214,16 +217,17 @@ function FresnelShell({ state, amplitude }: { state: OrbState; amplitude: number
 
 // ── Rotating ring ─────────────────────────────────────────────────────────────
 function Ring({
-  radius, speed, tiltX, tiltZ, state, amplitude,
+  radius, speed, tiltX, tiltZ, state, amplitudeRef,
 }: {
   radius: number; speed: number; tiltX: number; tiltZ: number;
-  state: OrbState; amplitude: number;
+  state: OrbState; amplitudeRef: React.MutableRefObject<number>;
 }) {
   const meshRef = useRef<THREE.Mesh>(null!);
   const matRef = useRef<THREE.MeshStandardMaterial>(null!);
   const targetColor = useMemo(() => new THREE.Color(...STATE_COLORS[state]), [state]);
 
   useFrame(({ clock }) => {
+    const amplitude = amplitudeRef.current;
     const t = clock.getElapsedTime();
     meshRef.current.rotation.y = t * speed;
     meshRef.current.rotation.x = tiltX + Math.sin(t * 0.4) * 0.05;
@@ -251,7 +255,7 @@ function Ring({
 }
 
 // ── Spiral energy particle field ──────────────────────────────────────────────
-function ParticleField({ state, amplitude }: { state: OrbState; amplitude: number }) {
+function ParticleField({ state, amplitudeRef }: { state: OrbState; amplitudeRef: React.MutableRefObject<number> }) {
   const COUNT = 240;
   const posRef = useRef<THREE.BufferAttribute>(null!);
   const matRef = useRef<THREE.PointsMaterial>(null!);
@@ -279,6 +283,7 @@ function ParticleField({ state, amplitude }: { state: OrbState; amplitude: numbe
     if (!posRef.current) return;
     const t = clock.getElapsedTime();
     const arr = posRef.current.array as Float32Array;
+    const amplitude = amplitudeRef.current;
     const angularBoost = 1 + amplitude * 2;
     for (let i = 0; i < COUNT; i++) {
       angles[i] += speeds[i] * 0.005 * angularBoost;
@@ -314,7 +319,7 @@ function ParticleField({ state, amplitude }: { state: OrbState; amplitude: numbe
 }
 
 // ── Scene ─────────────────────────────────────────────────────────────────────
-function Scene({ state, amplitude }: { state: OrbState; amplitude: number }) {
+function Scene({ state, amplitudeRef }: { state: OrbState; amplitudeRef: React.MutableRefObject<number> }) {
   return (
     <>
       <CameraOrbit radius={4.5} speed={0.05} />
@@ -325,16 +330,16 @@ function Scene({ state, amplitude }: { state: OrbState; amplitude: number }) {
       <pointLight position={[0, 0, 3]} intensity={0.55} color="#00e5ff" />
       <pointLight position={[0, 0, -3]} intensity={0.3} color="#00e5ff" />
 
-      <CoreSphere state={state} amplitude={amplitude} />
-      <InnerCore state={state} amplitude={amplitude} />
-      <FresnelShell state={state} amplitude={amplitude} />
+      <CoreSphere state={state} amplitudeRef={amplitudeRef} />
+      <InnerCore state={state} amplitudeRef={amplitudeRef} />
+      <FresnelShell state={state} amplitudeRef={amplitudeRef} />
 
-      <Ring radius={1.35} speed={0.6}  tiltX={0.4}  tiltZ={0}    state={state} amplitude={amplitude} />
-      <Ring radius={1.55} speed={-0.4} tiltX={-0.3} tiltZ={0.5}  state={state} amplitude={amplitude} />
-      <Ring radius={1.75} speed={0.25} tiltX={0.8}  tiltZ={-0.3} state={state} amplitude={amplitude} />
-      <Ring radius={1.95} speed={-0.18} tiltX={0.2} tiltZ={0.7}  state={state} amplitude={amplitude} />
+      <Ring radius={1.35} speed={0.6}  tiltX={0.4}  tiltZ={0}    state={state} amplitudeRef={amplitudeRef} />
+      <Ring radius={1.55} speed={-0.4} tiltX={-0.3} tiltZ={0.5}  state={state} amplitudeRef={amplitudeRef} />
+      <Ring radius={1.75} speed={0.25} tiltX={0.8}  tiltZ={-0.3} state={state} amplitudeRef={amplitudeRef} />
+      <Ring radius={1.95} speed={-0.18} tiltX={0.2} tiltZ={0.7}  state={state} amplitudeRef={amplitudeRef} />
 
-      <ParticleField state={state} amplitude={amplitude} />
+      <ParticleField state={state} amplitudeRef={amplitudeRef} />
 
       <EffectComposer>
         <Bloom
@@ -365,10 +370,10 @@ const CANVAS_KEY = "jarvis-reactor-canvas";
 
 export function ReactorCore({
   state,
-  amplitude,
+  amplitudeRef,
 }: {
   state: OrbState;
-  amplitude: number;
+  amplitudeRef: React.MutableRefObject<number>;
 }) {
   return (
     // position:fixed fills the entire viewport behind all UI elements
@@ -394,7 +399,7 @@ export function ReactorCore({
         }}
         style={{ width: "100%", height: "100%", display: "block" }}
       >
-        <Scene state={state} amplitude={amplitude} />
+        <Scene state={state} amplitudeRef={amplitudeRef} />
       </Canvas>
     </div>
   );
