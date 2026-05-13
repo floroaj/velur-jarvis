@@ -117,6 +117,53 @@ const JARVIS_TOOLS: Tool[] = [
   {
     type: "function",
     function: {
+      name: "get_woocommerce_summary",
+      description: "Get WooCommerce store summary for velur.de: total revenue, order count, average order value, top products, and pending orders for a date range.",
+      parameters: {
+        type: "object",
+        properties: {
+          days: { type: "number", description: "Number of past days to summarize (default 7)" },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_woocommerce_orders",
+      description: "Get recent WooCommerce orders from velur.de with order ID, customer name, total, status, and date.",
+      parameters: {
+        type: "object",
+        properties: {
+          status: { type: "string", description: "Filter by order status: pending, processing, completed, cancelled, refunded, on-hold (default: any)" },
+          limit: { type: "number", description: "Number of orders to return (default 10, max 50)" },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_woocommerce_products",
+      description: "List WooCommerce products from velur.de with name, price, stock status, and total sales.",
+      parameters: {
+        type: "object",
+        properties: {
+          search: { type: "string", description: "Optional search term to filter products" },
+          limit: { type: "number", description: "Number of products to return (default 10)" },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "create_wordpress_post",
       description: "Create a draft or published post on velur.de WordPress. Returns the post URL.",
       parameters: {
@@ -155,6 +202,12 @@ async function executeToolCall(
         return await listTasksTool(userId);
       case "run_task":
         return await runTaskTool(args.name as string, userId);
+      case "get_woocommerce_summary":
+        return await fetchWooCommerceSummary(args.days as number | undefined);
+      case "get_woocommerce_orders":
+        return await fetchWooCommerceOrders(args.status as string | undefined, args.limit as number | undefined);
+      case "get_woocommerce_products":
+        return await fetchWooCommerceProducts(args.search as string | undefined, args.limit as number | undefined);
       case "create_wordpress_post":
         return await createWordPressPost(
           args.title as string,
@@ -323,6 +376,71 @@ async function runTaskTool(name: string, userId: number): Promise<string> {
 
   await recordTaskRun({ taskId: task.id, userId, status, statusCode: statusCode || null, responseSnippet: snippet, triggeredBy: "jarvis-tool" });
   return `Task "${task.name}" executed: ${status.toUpperCase()} (HTTP ${statusCode}). ${snippet}`;
+}
+
+// ── WooCommerce helpers ──────────────────────────────────────────────────────
+
+const WOO_BASE = "https://velur.de/wp-json/wc/v3";
+const WOO_AUTH = "Basic " + Buffer.from("floroaj:LdII kMLa E3WM mW0r uFAu GutB").toString("base64");
+
+async function wooFetch(path: string): Promise<unknown> {
+  const resp = await fetch(`${WOO_BASE}${path}`, {
+    headers: { Authorization: WOO_AUTH, "Content-Type": "application/json" },
+  });
+  if (!resp.ok) {
+    const err = await resp.text().catch(() => "");
+    throw new Error(`WooCommerce ${resp.status}: ${err.slice(0, 200)}`);
+  }
+  return resp.json();
+}
+
+async function fetchWooCommerceSummary(days = 7): Promise<string> {
+  const after = new Date(Date.now() - days * 86400000).toISOString();
+  try {
+    const [orders, products] = await Promise.all([
+      wooFetch(`/orders?after=${after}&per_page=100&status=completed,processing`) as Promise<any[]>,
+      wooFetch("/products?per_page=10&orderby=popularity") as Promise<any[]>,
+    ]);
+    const revenue = orders.reduce((s: number, o: any) => s + parseFloat(o.total ?? "0"), 0);
+    const aov = orders.length ? revenue / orders.length : 0;
+    const pending = orders.filter((o: any) => o.status === "processing").length;
+    const topProducts = products.slice(0, 5).map((p: any) => `${p.name} (${p.total_sales} sales, €${p.price})`).join(", ");
+    return [
+      `WooCommerce last ${days} days:`,
+      `Revenue: €${revenue.toFixed(2)}`,
+      `Orders: ${orders.length} (${pending} processing)`,
+      `AOV: €${aov.toFixed(2)}`,
+      `Top products: ${topProducts || "n/a"}`,
+    ].join("\n");
+  } catch (err) {
+    return `WooCommerce error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+async function fetchWooCommerceOrders(status?: string, limit = 10): Promise<string> {
+  try {
+    const statusParam = status ? `&status=${status}` : "";
+    const orders = await wooFetch(`/orders?per_page=${Math.min(limit, 50)}${statusParam}`) as any[];
+    if (!orders.length) return "No orders found.";
+    return orders.map((o: any) =>
+      `#${o.id} | ${o.billing?.first_name ?? ""} ${o.billing?.last_name ?? ""} | €${o.total} | ${o.status} | ${new Date(o.date_created).toLocaleDateString("de-DE")}`
+    ).join("\n");
+  } catch (err) {
+    return `WooCommerce error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+async function fetchWooCommerceProducts(search?: string, limit = 10): Promise<string> {
+  try {
+    const searchParam = search ? `&search=${encodeURIComponent(search)}` : "";
+    const products = await wooFetch(`/products?per_page=${Math.min(limit, 50)}${searchParam}&orderby=popularity`) as any[];
+    if (!products.length) return "No products found.";
+    return products.map((p: any) =>
+      `${p.name} | €${p.price} | Stock: ${p.stock_status} | Sales: ${p.total_sales}`
+    ).join("\n");
+  } catch (err) {
+    return `WooCommerce error: ${err instanceof Error ? err.message : String(err)}`;
+  }
 }
 
 async function createWordPressPost(

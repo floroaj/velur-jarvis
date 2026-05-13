@@ -1,713 +1,585 @@
-import { JarvisLayout } from "@/components/JarvisLayout";
-import { ReactorCore } from "@/components/ReactorCore";
-import { VoiceOrb, type OrbState } from "@/components/VoiceOrb";
-import { Button } from "@/components/ui/button";
-import { useAudioAmplitude } from "@/hooks/useAudioAmplitude";
+/**
+ * Home — Jarvis Command Center
+ * Apple-minimal layout:
+ * - Full-screen dark canvas
+ * - Flower-of-Life 3D core centered
+ * - State label + transcript ticker below
+ * - Minimal pill controls
+ * - Slide-up session log drawer
+ */
+import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { AnimatePresence, motion } from "framer-motion";
-import { Mic, MicOff, Radio, Send, Volume2, VolumeX, Zap } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
+import { ChevronDown, ChevronUp, Mic, MicOff, Volume2, VolumeX, Zap } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import FlowerCore from "@/components/FlowerCore";
+import { useAudioAmplitude } from "@/hooks/useAudioAmplitude";
 
-type TranscriptEntry = {
+type OrbState = "idle" | "listening" | "thinking" | "speaking";
+
+interface SessionEntry {
+  id: string;
   role: "user" | "assistant";
-  text: string;
-  toolCalls?: string[];
-};
-
-type StreamEvent =
-  | { type: "conversation_id"; conversationId: number }
-  | { type: "token"; token: string }
-  | { type: "tool_start"; tools: string }
-  | { type: "tool_call"; name: string; args: Record<string, unknown> }
-  | { type: "tool_result"; name: string; result: string }
-  | { type: "done"; conversationId: number; reply: string }
-  | { type: "error"; message: string };
-
-const SILENCE_THRESHOLD = 0.012;
-const SILENCE_HOLD_MS = 1200;
-const MIN_RECORDING_MS = 800;
-
-// ── VAD Wake-Word: energy-based "Hey Jarvis" detection ───────────────────────
-// We detect a sharp amplitude spike followed by sustained speech as a wake trigger.
-// No external API needed — pure Web Audio API RMS analysis.
-function useVADWakeWord(
-  onWake: () => void,
-  enabled: boolean,
-  currentState: OrbState,
-) {
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const rafRef = useRef<number | null>(null);
-  const wakeWindowRef = useRef<number[]>([]);
-  const wakeArmedRef = useRef(false);
-
-  useEffect(() => {
-    if (!enabled || currentState !== "idle") {
-      cleanup();
-      return;
-    }
-
-    let cancelled = false;
-    navigator.mediaDevices
-      .getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
-      .then(stream => {
-        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
-        streamRef.current = stream;
-        const ctx = new AudioContext();
-        const source = ctx.createMediaStreamSource(stream);
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 512;
-        source.connect(analyser);
-        analyserRef.current = analyser;
-
-        const buf = new Float32Array(analyser.fftSize);
-        let spikeCount = 0;
-        let silenceCount = 0;
-
-        function tick() {
-          if (cancelled) return;
-          analyser.getFloatTimeDomainData(buf);
-          const rms = Math.sqrt(buf.reduce((s, v) => s + v * v, 0) / buf.length);
-          wakeWindowRef.current.push(rms);
-          if (wakeWindowRef.current.length > 40) wakeWindowRef.current.shift();
-
-          if (rms > 0.04) {
-            spikeCount++;
-            silenceCount = 0;
-          } else if (rms < 0.01) {
-            silenceCount++;
-            if (silenceCount > 15) spikeCount = 0;
-          }
-
-          // Pattern: 8+ consecutive loud frames (≈ ~200ms of speech) → wake
-          if (spikeCount >= 8 && !wakeArmedRef.current) {
-            wakeArmedRef.current = true;
-            spikeCount = 0;
-            onWake();
-            // Cooldown
-            setTimeout(() => { wakeArmedRef.current = false; }, 3000);
-          }
-
-          rafRef.current = requestAnimationFrame(tick);
-        }
-        tick();
-      })
-      .catch(() => { /* mic permission denied — silent fail */ });
-
-    return () => {
-      cancelled = true;
-      cleanup();
-    };
-  }, [enabled, currentState]);
-
-  function cleanup() {
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    streamRef.current?.getTracks().forEach(t => t.stop());
-    streamRef.current = null;
-    analyserRef.current = null;
-  }
+  content: string;
+  tools?: string[];
+  streaming?: boolean;
 }
 
-// ── Boot sequence component ───────────────────────────────────────────────────
-function BootSequence({ onComplete }: { onComplete: () => void }) {
-  const lines = [
-    "Initializing neural core ...",
-    "Loading Velur business context ...",
-    "Connecting to API vault ...",
-    "Calibrating voice synthesis ...",
-    "Establishing secure channel ...",
-    "System online.",
-  ];
-  const [visible, setVisible] = useState<string[]>([]);
-  const [done, setDone] = useState(false);
+const STATE_LABELS: Record<OrbState, string> = {
+  idle:      "Awaiting directive",
+  listening: "Listening",
+  thinking:  "Processing",
+  speaking:  "Speaking",
+};
+
+// ── VAD hook (energy-based) ───────────────────────────────────────────────────
+function useVAD(onSpeechStart: () => void, onSpeechEnd: () => void, enabled: boolean) {
+  const analyserRef  = useRef<AnalyserNode | null>(null);
+  const streamRef    = useRef<MediaStream | null>(null);
+  const rafRef       = useRef<number>(0);
+  const speakingRef  = useRef(false);
+  const silenceRef   = useRef(0);
+  const THRESHOLD    = 0.018;
+  const SILENCE_MS   = 1200;
+
+  useEffect(() => {
+    if (!enabled) {
+      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+      cancelAnimationFrame(rafRef.current);
+      return;
+    }
+    let ctx: AudioContext;
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      streamRef.current = stream;
+      ctx = new AudioContext();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      source.connect(analyser);
+      analyserRef.current = analyser;
+      const buf = new Float32Array(analyser.fftSize);
+
+      const tick = () => {
+        analyser.getFloatTimeDomainData(buf);
+        const rms = Math.sqrt(buf.reduce((s, v) => s + v * v, 0) / buf.length);
+        if (rms > THRESHOLD) {
+          if (!speakingRef.current) { speakingRef.current = true; onSpeechStart(); }
+          silenceRef.current = 0;
+        } else if (speakingRef.current) {
+          silenceRef.current += 16;
+          if (silenceRef.current > SILENCE_MS) {
+            speakingRef.current = false;
+            onSpeechEnd();
+          }
+        }
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      rafRef.current = requestAnimationFrame(tick);
+    }).catch(() => {});
+    return () => {
+      cancelAnimationFrame(rafRef.current);
+      streamRef.current?.getTracks().forEach(t => t.stop());
+      ctx?.close();
+    };
+  }, [enabled]); // eslint-disable-line
+}
+
+// ── Boot sequence ─────────────────────────────────────────────────────────────
+const BOOT_LINES = [
+  "Neural core online",
+  "Connecting to API vault",
+  "Loading business context",
+  "Calibrating voice engine",
+  "Establishing secure channel",
+  "System ready",
+];
+
+function BootSequence({ onDone }: { onDone: () => void }) {
+  const [lines, setLines] = useState<string[]>([]);
+  const [done, setDone]   = useState(false);
 
   useEffect(() => {
     let i = 0;
-    const interval = setInterval(() => {
-      if (i < lines.length) {
-        setVisible(prev => [...prev, lines[i]]);
+    const id = setInterval(() => {
+      if (i < BOOT_LINES.length) {
+        setLines(prev => [...prev, BOOT_LINES[i]!]);
         i++;
       } else {
-        clearInterval(interval);
-        setTimeout(() => setDone(true), 400);
-        setTimeout(onComplete, 900);
+        clearInterval(id);
+        setTimeout(() => { setDone(true); setTimeout(onDone, 400); }, 300);
       }
     }, 280);
-    return () => clearInterval(interval);
-  }, []);
+    return () => clearInterval(id);
+  }, []); // eslint-disable-line
 
   return (
-    <AnimatePresence>
-      {!done && (
-        <motion.div
-          initial={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.5 }}
-          className="fixed inset-0 z-50 bg-background flex flex-col items-center justify-center gap-2 hud-grid scanline"
-        >
-          <div className="font-display text-4xl glow-text-cyan tracking-[0.5em] mb-8">JARVIS</div>
-          <div className="font-mono text-xs text-primary/80 space-y-1 w-80">
-            {visible.map((line, i) => (
-              <motion.div
-                key={i}
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ duration: 0.2 }}
-                className={i === visible.length - 1 ? "text-accent" : "text-primary/60"}
-              >
-                {i === visible.length - 1 ? "▶ " : "✓ "}{line}
-              </motion.div>
-            ))}
-          </div>
-        </motion.div>
-      )}
-    </AnimatePresence>
-  );
-}
-
-// ── Connector status bar ──────────────────────────────────────────────────────
-const CONNECTORS = [
-  { id: "tw", label: "Triple Whale" },
-  { id: "kl", label: "Klaviyo" },
-  { id: "cl", label: "Clarity" },
-  { id: "meta", label: "Meta Ads" },
-  { id: "wp", label: "WordPress" },
-];
-
-function ConnectorStatusBar() {
-  const [statuses, setStatuses] = useState<Record<string, "ok" | "checking" | "error">>(
-    Object.fromEntries(CONNECTORS.map(c => [c.id, "checking"])),
-  );
-
-  useEffect(() => {
-    // Simulate health check — in a real scenario we'd ping each connector
-    const timer = setTimeout(() => {
-      setStatuses(Object.fromEntries(CONNECTORS.map(c => [c.id, "ok"])));
-    }, 1800);
-    return () => clearTimeout(timer);
-  }, []);
-
-  const color = (s: string) =>
-    s === "ok" ? "bg-emerald-400" : s === "error" ? "bg-red-500" : "bg-yellow-400 animate-pulse";
-
-  return (
-    <div className="flex items-center gap-4 px-6 py-1 border-b border-primary/10 bg-background/20 backdrop-blur">
-      {CONNECTORS.map(c => (
-        <div key={c.id} className="flex items-center gap-1.5">
-          <div className={`w-1.5 h-1.5 rounded-full ${color(statuses[c.id])}`} />
-          <span className="text-[9px] tracking-[0.3em] uppercase text-muted-foreground">{c.label}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ── Tool call badge ───────────────────────────────────────────────────────────
-function ToolBadge({ name }: { name: string }) {
-  const label = name.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-  return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[9px] tracking-[0.2em] uppercase bg-accent/20 text-accent border border-accent/30">
-      <Zap className="h-2.5 w-2.5" /> {label}
-    </span>
-  );
-}
-
-// ── Live ticker ───────────────────────────────────────────────────────────────
-function LiveTicker({
-  state,
-  streamingText,
-  latest,
-}: {
-  state: OrbState;
-  streamingText: string;
-  latest: TranscriptEntry | undefined;
-}) {
-  const label =
-    state === "listening"
-      ? "// Listening..."
-      : state === "thinking"
-        ? "// Jarvis is thinking..."
-        : state === "speaking"
-          ? "// Jarvis is speaking"
-          : "// Standby";
-
-  const displayText = streamingText || latest?.text || "Awaiting directive ...";
-
-  return (
-    <div className="absolute left-0 right-0 top-12 pointer-events-none flex justify-center z-10">
-      <div className="hud-panel hud-corner px-5 py-2 max-w-3xl w-full mx-6 flex items-center gap-4 overflow-hidden">
-        <span className="text-[10px] tracking-[0.4em] uppercase text-primary/80 font-display shrink-0">
-          {label}
-        </span>
-        <div className="flex-1 overflow-hidden">
+    <motion.div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background"
+      animate={{ opacity: done ? 0 : 1 }}
+      transition={{ duration: 0.4 }}
+    >
+      <div className="flex flex-col gap-2 w-64">
+        <p className="text-xs font-semibold text-primary mb-3 tracking-widest uppercase">Jarvis</p>
+        {lines.map((line, idx) => (
           <motion.div
-            key={displayText.slice(0, 20) + state}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="font-mono text-xs truncate"
+            key={idx}
+            initial={{ opacity: 0, x: -8 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.2 }}
+            className="flex items-center gap-2.5 text-xs text-muted-foreground"
           >
-            {displayText}
+            <div className="w-1 h-1 rounded-full bg-primary shrink-0" />
+            {line}
+            {idx === lines.length - 1 && line !== "System ready" && (
+              <span className="cursor-blink text-primary">_</span>
+            )}
+            {line === "System ready" && (
+              <span className="text-primary ml-1">✓</span>
+            )}
           </motion.div>
-        </div>
+        ))}
       </div>
-    </div>
+    </motion.div>
   );
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
 export default function Home() {
-  const [booted, setBooted] = useState(false);
-  const [orbState, setOrbState] = useState<OrbState>("idle");
-  const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
-  const [streamingText, setStreamingText] = useState("");
-  const [activeTools, setActiveTools] = useState<string[]>([]);
-  const [textInput, setTextInput] = useState("");
-  const [conversationId, setConversationId] = useState<number | undefined>(undefined);
-  const [muted, setMuted] = useState(false);
-  const [handsFree, setHandsFree] = useState(false);
-  const [vadEnabled, setVadEnabled] = useState(false);
+  const { user } = useAuth();
+  const [booted, setBooted]         = useState(false);
+  const [orbState, setOrbState]     = useState<OrbState>("idle");
+  const [amplitude, setAmplitude]   = useState(0);
+  const [voiceOn, setVoiceOn]       = useState(true);
+  const [vadOn, setVadOn]           = useState(false);
+  const [handsFree, setHandsFree]   = useState(false);
+  const [recording, setRecording]   = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [ticker, setTicker]         = useState("");
+  const [session, setSession]       = useState<SessionEntry[]>([]);
+  const [convId, setConvId]         = useState<number | undefined>();
+  const [textInput, setTextInput]   = useState("");
 
-  const [micStream, setMicStream] = useState<MediaStream | null>(null);
-  const [ttsAudio, setTtsAudio] = useState<HTMLAudioElement | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef   = useRef<Blob[]>([]);
+  const audioRef         = useRef<HTMLAudioElement | null>(null);
+  const streamRef        = useRef<MediaStream | null>(null);
+  const sessionEndRef    = useRef<HTMLDivElement>(null);
 
-  const micAmplitude = useAudioAmplitude(micStream, orbState === "listening");
-  const ttsAmplitude = useAudioAmplitude(ttsAudio, orbState === "speaking");
-  const amplitude =
-    orbState === "listening" ? micAmplitude : orbState === "speaking" ? ttsAmplitude : 0;
+  // Amplitude from mic stream
+  const micAmplitude = useAudioAmplitude(streamRef.current, orbState === "listening");
+  // Amplitude from TTS audio element
+  const ttsAmplitude = useAudioAmplitude(audioRef.current, orbState === "speaking");
 
-  const uploadAudio = trpc.jarvis.uploadAudio.useMutation();
-  const transcribeMutation = trpc.jarvis.transcribe.useMutation();
-  const speakMutation = trpc.jarvis.speak.useMutation();
-
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const recordingStartRef = useRef<number>(0);
-  const silenceTimerRef = useRef<number | null>(null);
-  const handsFreeRef = useRef(handsFree);
-  const orbStateRef = useRef<OrbState>("idle");
-  const transcriptEndRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => { handsFreeRef.current = handsFree; }, [handsFree]);
-  useEffect(() => { orbStateRef.current = orbState; }, [orbState]);
   useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [transcript, streamingText]);
+    if (orbState === "listening") setAmplitude(micAmplitude);
+    else if (orbState === "speaking") setAmplitude(ttsAmplitude);
+    else setAmplitude(0);
+  }, [orbState, micAmplitude, ttsAmplitude]);
 
-  // VAD wake-word
-  useVADWakeWord(
-    () => {
-      if (orbStateRef.current === "idle") startRecording();
-    },
-    vadEnabled,
-    orbState,
+  // Scroll session log to bottom
+  useEffect(() => {
+    sessionEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [session]);
+
+  // Spacebar push-to-talk
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.code === "Space" && e.target === document.body && !recording && orbState === "idle") {
+        e.preventDefault();
+        startRecording();
+      }
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.code === "Space" && recording) {
+        e.preventDefault();
+        stopRecording();
+      }
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
+  }, [recording, orbState]); // eslint-disable-line
+
+  // tRPC
+  const uploadAudio  = trpc.jarvis.uploadAudio.useMutation();
+  const transcribe   = trpc.jarvis.transcribe.useMutation();
+  const speak        = trpc.jarvis.speak.useMutation();
+
+  // ── Recording ──────────────────────────────────────────────────────────────
+  const startRecording = useCallback(async () => {
+    if (recording || orbState !== "idle") return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const mr = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
+      audioChunksRef.current = [];
+      mr.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      mr.start(100);
+      mediaRecorderRef.current = mr;
+      setRecording(true);
+      setOrbState("listening");
+    } catch { /* mic denied */ }
+  }, [recording, orbState]);
+
+  const stopRecording = useCallback(() => {
+    const mr = mediaRecorderRef.current;
+    if (!mr || mr.state === "inactive") return;
+    mr.stop();
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    streamRef.current = null;
+    setRecording(false);
+    mr.onstop = async () => {
+      const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+      await processAudio(blob);
+    };
+  }, []); // eslint-disable-line
+
+  // VAD hooks
+  useVAD(
+    () => { if (vadOn && orbState === "idle") startRecording(); },
+    () => { if (vadOn && recording) stopRecording(); },
+    vadOn,
   );
 
-  // Hands-free silence detection
-  useEffect(() => {
-    if (orbState !== "listening") {
-      if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
-      return;
-    }
-    if (!handsFree) return;
-    if (micAmplitude < SILENCE_THRESHOLD) {
-      if (silenceTimerRef.current == null) {
-        silenceTimerRef.current = window.setTimeout(() => {
-          if (orbStateRef.current === "listening") stopRecording();
-        }, SILENCE_HOLD_MS);
-      }
-    } else if (silenceTimerRef.current != null) {
-      clearTimeout(silenceTimerRef.current);
-      silenceTimerRef.current = null;
-    }
-  }, [micAmplitude, orbState, handsFree]);
-
-  async function ensureStream(): Promise<MediaStream> {
-    if (micStream && micStream.active) return micStream;
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
-    setMicStream(stream);
-    return stream;
-  }
-
-  async function startRecording() {
-    try {
-      const stream = await ensureStream();
-      const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
-      chunksRef.current = [];
-      recorder.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data); };
-      recorder.onstop = () => handleRecordingStopped();
-      recorder.start(250);
-      recorderRef.current = recorder;
-      recordingStartRef.current = Date.now();
-      setOrbState("listening");
-    } catch {
-      toast.error("Microphone access denied");
-    }
-  }
-
-  function stopRecording() {
-    const recorder = recorderRef.current;
-    if (!recorder || recorder.state === "inactive") return;
-    try { recorder.stop(); } catch { /* ignore */ }
-  }
-
-  async function handleRecordingStopped() {
-    const duration = Date.now() - recordingStartRef.current;
-    const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-    chunksRef.current = [];
-    if (duration < MIN_RECORDING_MS || blob.size < 1000) { setOrbState("idle"); return; }
-
+  // ── Process audio → STT → LLM stream → TTS ─────────────────────────────────
+  const processAudio = async (blob: Blob) => {
     setOrbState("thinking");
+    setTicker("Transcribing…");
     try {
-      const dataBase64 = await blobToBase64(blob);
-      const uploaded = await uploadAudio.mutateAsync({ dataBase64, mimeType: "audio/webm" });
-      const transcription = await transcribeMutation.mutateAsync({ audioUrl: uploaded.url, language: "de" });
-      const text = transcription.text?.trim();
-      if (!text) { setOrbState("idle"); return; }
-      setTranscript(prev => [...prev, { role: "user", text }]);
-      await respondStreaming(text);
+      // Upload
+      const arrayBuffer = await blob.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = "";
+      for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]!);
+      const dataBase64 = btoa(binary);
+      const { url } = await uploadAudio.mutateAsync({ dataBase64, mimeType: "audio/webm" });
+
+      // Transcribe
+      const { text } = await transcribe.mutateAsync({ audioUrl: url, language: "de" });
+      if (!text.trim()) { setOrbState("idle"); setTicker(""); return; }
+
+      await sendMessage(text);
     } catch (err) {
-      console.error(err);
-      toast.error("Voice processing failed");
       setOrbState("idle");
+      setTicker("");
     }
-  }
+  };
 
-  // ── Streaming respond via SSE ─────────────────────────────────────────────
-  async function respondStreaming(userText: string) {
+  // ── Send text message via SSE stream ───────────────────────────────────────
+  const sendMessage = async (text: string) => {
+    if (!text.trim()) return;
+    setTextInput("");
+
+    // Add user message
+    const userId = crypto.randomUUID();
+    setSession(prev => [...prev, { id: userId, role: "user", content: text }]);
     setOrbState("thinking");
-    setStreamingText("");
-    setActiveTools([]);
+    setTicker("Thinking…");
+
+    // Add streaming assistant placeholder
+    const assistantId = crypto.randomUUID();
+    setSession(prev => [...prev, { id: assistantId, role: "assistant", content: "", streaming: true }]);
 
     try {
       const resp = await fetch("/api/jarvis/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ text: userText, conversationId, useTool: true }),
+        body: JSON.stringify({ text, conversationId: convId, useTool: true }),
       });
 
-      if (!resp.ok) {
-        throw new Error(`Stream error: ${resp.status}`);
-      }
+      if (!resp.ok || !resp.body) throw new Error("Stream failed");
 
-      const reader = resp.body!.getReader();
+      const reader = resp.body.getReader();
       const decoder = new TextDecoder();
-      let buffer = "";
       let fullReply = "";
-      let newConvId = conversationId;
-      const toolsUsed: string[] = [];
+      let activeTools: string[] = [];
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() ?? "";
-
-        for (const part of parts) {
-          if (!part.startsWith("data: ")) continue;
+        const chunk = decoder.decode(value, { stream: true });
+        for (const line of chunk.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
           try {
-            const event = JSON.parse(part.slice(6)) as StreamEvent;
-            switch (event.type) {
-              case "conversation_id":
-                newConvId = event.conversationId;
-                setConversationId(event.conversationId);
-                break;
-              case "tool_start":
-                setOrbState("thinking");
-                setActiveTools(event.tools.split(", "));
-                toolsUsed.push(...event.tools.split(", "));
-                break;
-              case "token":
-                fullReply += event.token;
-                setStreamingText(fullReply);
-                break;
-              case "done":
-                fullReply = event.reply || fullReply;
-                break;
-              case "error":
-                throw new Error(event.message);
+            const event = JSON.parse(line.slice(6));
+            if (event.type === "conversation_id") setConvId(event.conversationId);
+            if (event.type === "token") {
+              fullReply += event.token;
+              setTicker(fullReply.slice(-80));
+              setSession(prev => prev.map(m =>
+                m.id === assistantId ? { ...m, content: fullReply } : m,
+              ));
             }
-          } catch (parseErr) {
-            // ignore malformed lines
-          }
+            if (event.type === "tool_start") {
+              activeTools = (event.tools as string).split(",").map((s: string) => s.trim());
+              setTicker(`Using ${activeTools.join(", ")}…`);
+            }
+            if (event.type === "tool_result") {
+              setSession(prev => prev.map(m =>
+                m.id === assistantId ? { ...m, tools: activeTools } : m,
+              ));
+            }
+            if (event.type === "done") {
+              setSession(prev => prev.map(m =>
+                m.id === assistantId
+                  ? { ...m, content: event.reply as string, streaming: false, tools: activeTools.length ? activeTools : undefined }
+                  : m,
+              ));
+              // TTS
+              if (voiceOn && event.reply) {
+                setOrbState("speaking");
+                setTicker("Speaking…");
+                try {
+                  const { url: audioUrl } = await speak.mutateAsync({ text: event.reply as string });
+                  const audio = new Audio(audioUrl);
+                  audioRef.current = audio;
+                  audio.onended = () => { setOrbState("idle"); setTicker(""); audioRef.current = null; };
+                  audio.onerror = () => { setOrbState("idle"); setTicker(""); };
+                  await audio.play();
+                } catch { setOrbState("idle"); setTicker(""); }
+              } else {
+                setOrbState("idle");
+                setTicker("");
+              }
+            }
+          } catch { /* ignore parse errors */ }
         }
       }
-
-      setStreamingText("");
-      setActiveTools([]);
-      if (fullReply) {
-        setTranscript(prev => [...prev, { role: "assistant", text: fullReply, toolCalls: toolsUsed }]);
-      }
-
-      if (!muted && fullReply) {
-        await speakReply(fullReply);
-      } else {
-        setOrbState("idle");
-        maybeContinueHandsFree();
-      }
-    } catch (err) {
-      console.error(err);
-      toast.error("Jarvis is unreachable");
-      setOrbState("idle");
-    }
-  }
-
-  async function speakReply(text: string) {
-    setOrbState("speaking");
-    try {
-      const speech = await speakMutation.mutateAsync({ text });
-      const audio = new Audio(speech.url);
-      audio.crossOrigin = "anonymous";
-      setTtsAudio(audio);
-      audio.onended = () => { setOrbState("idle"); setTtsAudio(null); maybeContinueHandsFree(); };
-      audio.onerror = () => { setOrbState("idle"); setTtsAudio(null); };
-      await audio.play();
     } catch {
+      setSession(prev => prev.map(m =>
+        m.id === assistantId ? { ...m, content: "I encountered an error. Please try again.", streaming: false } : m,
+      ));
       setOrbState("idle");
+      setTicker("");
     }
-  }
+  };
 
-  function maybeContinueHandsFree() {
-    if (handsFreeRef.current) {
-      window.setTimeout(() => {
-        if (orbStateRef.current === "idle") startRecording();
-      }, 350);
-    }
-  }
-
-  async function sendText() {
-    const text = textInput.trim();
-    if (!text) return;
-    setTextInput("");
-    setTranscript(prev => [...prev, { role: "user", text }]);
-    await respondStreaming(text);
-  }
-
-  function toggleHandsFree() {
-    const next = !handsFree;
-    setHandsFree(next);
-    if (next && orbState === "idle") startRecording();
-    if (!next && orbState === "listening") stopRecording();
-  }
-
-  // Push-to-talk spacebar
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code !== "Space" || e.repeat) return;
-      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
-      if (tag === "input" || tag === "textarea") return;
-      e.preventDefault();
-      if (orbStateRef.current === "idle") startRecording();
-    };
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code !== "Space") return;
-      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
-      if (tag === "input" || tag === "textarea") return;
-      if (orbStateRef.current === "listening" && !handsFreeRef.current) stopRecording();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
-    return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("keyup", onKeyUp); };
-  }, []);
-
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <>
-      <BootSequence onComplete={() => setBooted(true)} />
-      <JarvisLayout>
-        <ConnectorStatusBar />
-        <div className="relative min-h-[calc(100vh-8rem)] hud-grid scanline">
-          <div className="absolute top-4 left-6 text-[10px] tracking-[0.4em] uppercase text-primary/70 font-display">
-            // SYSTEM ONLINE
-          </div>
-          <div className="absolute top-4 right-6 text-[10px] tracking-[0.4em] uppercase text-primary/70 font-display">
-            <ClockDisplay />
-          </div>
+      {!booted && <BootSequence onDone={() => setBooted(true)} />}
 
-          <LiveTicker state={orbState} streamingText={streamingText} latest={transcript[transcript.length - 1]} />
+      <div className="flex-1 flex flex-col items-center justify-center relative overflow-hidden min-h-[calc(100vh-3rem)]">
+        {/* Very subtle radial glow behind core */}
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            background: orbState === "idle"
+              ? "radial-gradient(ellipse 50% 50% at 50% 50%, oklch(0.76 0.14 192 / 0.04) 0%, transparent 70%)"
+              : orbState === "listening"
+              ? "radial-gradient(ellipse 55% 55% at 50% 50%, oklch(0.72 0.18 145 / 0.07) 0%, transparent 70%)"
+              : orbState === "thinking"
+              ? "radial-gradient(ellipse 50% 50% at 50% 50%, oklch(0.78 0.14 80 / 0.06) 0%, transparent 70%)"
+              : "radial-gradient(ellipse 60% 60% at 50% 50%, oklch(0.76 0.14 192 / 0.10) 0%, transparent 70%)",
+            transition: "background 1s ease",
+          }}
+        />
 
-          {/* Active tool indicator */}
-          <AnimatePresence>
-            {activeTools.length > 0 && (
-              <motion.div
-                initial={{ opacity: 0, y: -10 }}
+        {/* Core */}
+        <motion.div
+          className="relative"
+          animate={{ scale: booted ? 1 : 0.85, opacity: booted ? 1 : 0 }}
+          transition={{ duration: 0.8, ease: [0.23, 1, 0.32, 1] }}
+        >
+          <FlowerCore state={orbState} amplitude={amplitude} size={400} />
+        </motion.div>
+
+        {/* State label + ticker */}
+        <motion.div
+          className="flex flex-col items-center gap-1.5 mt-6"
+          animate={{ opacity: booted ? 1 : 0, y: booted ? 0 : 10 }}
+          transition={{ duration: 0.6, delay: 0.3 }}
+        >
+          <p className="text-xs font-medium tracking-widest uppercase text-muted-foreground">
+            {STATE_LABELS[orbState]}
+          </p>
+          <AnimatePresence mode="wait">
+            {ticker && (
+              <motion.p
+                key={ticker.slice(0, 20)}
+                initial={{ opacity: 0, y: 4 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="absolute top-24 left-0 right-0 flex justify-center gap-2 z-10"
+                exit={{ opacity: 0, y: -4 }}
+                transition={{ duration: 0.2 }}
+                className="text-sm text-foreground/70 max-w-xs text-center leading-snug"
               >
-                {activeTools.map(t => <ToolBadge key={t} name={t} />)}
-              </motion.div>
+                {ticker}
+                {orbState === "thinking" && <span className="cursor-blink ml-0.5 text-primary">_</span>}
+              </motion.p>
             )}
           </AnimatePresence>
+        </motion.div>
 
-          <div className="container max-w-6xl mx-auto py-16 grid lg:grid-cols-[1fr_360px] gap-8 items-start">
-            <div className="flex flex-col items-center gap-10">
-              {/* 3D Reactor Core */}
-              <div
-                className="relative cursor-pointer"
-                onClick={() => {
-                  if (orbState === "idle") startRecording();
-                  else if (orbState === "listening") stopRecording();
-                }}
-              >
-                <ReactorCore state={orbState} amplitude={amplitude} size={420} />
-                <div className="absolute -inset-12 pointer-events-none hud-corner" />
-                {/* State label below orb */}
-                <div className="absolute -bottom-10 left-0 right-0 text-center font-display text-xs tracking-[0.5em] uppercase text-primary/70">
-                  {orbState.toUpperCase()}
-                </div>
-              </div>
+        {/* Controls */}
+        <motion.div
+          className="flex flex-col items-center gap-3 mt-8"
+          animate={{ opacity: booted ? 1 : 0, y: booted ? 0 : 12 }}
+          transition={{ duration: 0.6, delay: 0.5 }}
+        >
+          {/* Primary speak button */}
+          <button
+            onPointerDown={startRecording}
+            onPointerUp={stopRecording}
+            disabled={orbState === "thinking" || orbState === "speaking"}
+            className={`
+              flex items-center gap-2 px-6 py-3 rounded-full text-sm font-medium transition-all btn-press
+              ${recording
+                ? "bg-primary text-primary-foreground shadow-[0_0_20px_oklch(0.76_0.14_192/0.4)]"
+                : orbState !== "idle"
+                ? "bg-secondary text-muted-foreground cursor-not-allowed"
+                : "bg-primary/10 text-primary border border-primary/30 hover:bg-primary/15"
+              }
+            `}
+          >
+            {recording ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+            {recording ? "Release to send" : "Hold to speak"}
+          </button>
 
-              {/* Controls */}
-              <div className="flex items-center gap-3 flex-wrap justify-center">
-                <Button
-                  size="lg"
-                  variant={orbState === "listening" ? "destructive" : "default"}
-                  onClick={() => {
-                    if (orbState === "idle") startRecording();
-                    else if (orbState === "listening") stopRecording();
-                  }}
-                  disabled={orbState === "thinking" || orbState === "speaking"}
-                  className="font-display tracking-[0.3em]"
-                >
-                  {orbState === "listening" ? (
-                    <><MicOff className="h-4 w-4 mr-2" />STOP</>
-                  ) : (
-                    <><Mic className="h-4 w-4 mr-2" />SPEAK</>
-                  )}
-                </Button>
-                <Button
-                  size="lg"
-                  variant={handsFree ? "default" : "outline"}
-                  onClick={toggleHandsFree}
-                  className="font-display tracking-[0.3em]"
-                >
-                  <Radio className="h-4 w-4 mr-2" />HANDS-FREE
-                </Button>
-                <Button
-                  size="lg"
-                  variant={vadEnabled ? "default" : "outline"}
-                  onClick={() => setVadEnabled(v => !v)}
-                  className="font-display tracking-[0.3em]"
-                  title="Voice-activated: speak to wake Jarvis"
-                >
-                  <Zap className="h-4 w-4 mr-2" />
-                  {vadEnabled ? "VAD ON" : "VAD OFF"}
-                </Button>
-                <Button
-                  size="lg"
-                  variant="outline"
-                  onClick={() => setMuted(m => !m)}
-                  className="font-display tracking-[0.3em]"
-                >
-                  {muted ? <VolumeX className="h-4 w-4 mr-2" /> : <Volume2 className="h-4 w-4 mr-2" />}
-                  {muted ? "MUTED" : "VOICE"}
-                </Button>
-              </div>
+          {/* Secondary controls */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setHandsFree(v => !v)}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-medium transition-all btn-press border ${
+                handsFree
+                  ? "border-primary/40 bg-primary/10 text-primary"
+                  : "border-border text-muted-foreground hover:text-foreground hover:border-border/80"
+              }`}
+            >
+              <Zap className="w-3 h-3" />
+              Hands-free
+            </button>
+            <button
+              onClick={() => setVadOn(v => !v)}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-medium transition-all btn-press border ${
+                vadOn
+                  ? "border-primary/40 bg-primary/10 text-primary"
+                  : "border-border text-muted-foreground hover:text-foreground hover:border-border/80"
+              }`}
+            >
+              <Mic className="w-3 h-3" />
+              VAD
+            </button>
+            <button
+              onClick={() => setVoiceOn(v => !v)}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-medium transition-all btn-press border ${
+                voiceOn
+                  ? "border-primary/40 bg-primary/10 text-primary"
+                  : "border-border text-muted-foreground hover:text-foreground hover:border-border/80"
+              }`}
+            >
+              {voiceOn ? <Volume2 className="w-3 h-3" /> : <VolumeX className="w-3 h-3" />}
+              Voice
+            </button>
+          </div>
 
-              <div className="text-[10px] tracking-[0.4em] uppercase text-muted-foreground">
-                Hold spacebar · tap orb · or enable VAD
-              </div>
+          {/* Text input */}
+          <div className="flex items-center gap-2 mt-1">
+            <input
+              type="text"
+              value={textInput}
+              onChange={e => setTextInput(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && textInput.trim()) { sendMessage(textInput); } }}
+              placeholder="Type a message…"
+              className="w-64 px-4 py-2 rounded-full bg-secondary border border-border text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 transition-colors"
+            />
+            <button
+              onClick={() => sendMessage(textInput)}
+              disabled={!textInput.trim() || orbState !== "idle"}
+              className="px-4 py-2 rounded-full bg-primary/10 border border-primary/30 text-primary text-sm font-medium hover:bg-primary/15 transition-all btn-press disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Send
+            </button>
+          </div>
+        </motion.div>
 
-              {/* Text input */}
-              <div className="w-full hud-panel hud-corner p-4">
-                <div className="flex items-center gap-2 text-[10px] tracking-[0.4em] uppercase text-primary/80 mb-3">
-                  <Radio className="h-3 w-3" /> Live Channel
-                </div>
-                <div className="flex gap-2">
-                  <input
-                    value={textInput}
-                    onChange={e => setTextInput(e.target.value)}
-                    onKeyDown={e => { if (e.key === "Enter") sendText(); }}
-                    placeholder="Type a directive for Jarvis..."
-                    className="flex-1 bg-background/60 border border-primary/30 rounded-md px-3 py-2 text-sm font-mono outline-none focus:border-primary"
-                  />
-                  <Button onClick={sendText} disabled={!textInput.trim() || orbState !== "idle"}>
-                    <Send className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-            </div>
+        {/* Session log drawer toggle */}
+        {session.length > 0 && (
+          <motion.button
+            className="absolute bottom-6 right-6 flex items-center gap-1.5 px-3 py-1.5 rounded-full glass border border-border/50 text-xs text-muted-foreground hover:text-foreground transition-all btn-press"
+            onClick={() => setDrawerOpen(v => !v)}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+          >
+            {drawerOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />}
+            {session.length} message{session.length !== 1 ? "s" : ""}
+          </motion.button>
+        )}
+      </div>
 
-            {/* Session log */}
-            <aside className="hud-panel hud-corner p-4 max-h-[75vh] overflow-y-auto">
-              <div className="flex items-center justify-between mb-3">
-                <div className="text-[10px] tracking-[0.4em] uppercase text-primary/80 font-display">
-                  Session Log
-                </div>
+      {/* ── Slide-up session drawer ────────────────────────────────────────── */}
+      <AnimatePresence>
+        {drawerOpen && (
+          <motion.div
+            initial={{ y: "100%", opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: "100%", opacity: 0 }}
+            transition={{ duration: 0.35, ease: [0.23, 1, 0.32, 1] }}
+            className="fixed bottom-0 left-0 right-0 z-40 h-[55vh] glass border-t border-border/50 flex flex-col"
+          >
+            {/* Drawer header */}
+            <div className="flex items-center justify-between px-5 py-3 border-b border-border/40 shrink-0">
+              <p className="text-xs font-medium text-foreground">Session Log</p>
+              <div className="flex items-center gap-3">
                 <button
-                  className="text-[10px] tracking-[0.3em] uppercase text-muted-foreground hover:text-primary"
-                  onClick={() => { setTranscript([]); setConversationId(undefined); }}
+                  onClick={() => setSession([])}
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
                 >
                   Clear
                 </button>
+                <button
+                  onClick={() => setDrawerOpen(false)}
+                  className="text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <ChevronDown className="w-4 h-4" />
+                </button>
               </div>
-              {transcript.length === 0 && !streamingText && (
-                <div className="text-xs text-muted-foreground italic">Awaiting first directive...</div>
-              )}
-              <div className="space-y-3">
-                {transcript.map((entry, i) => (
-                  <div
-                    key={i}
-                    className={`text-sm leading-relaxed border-l-2 pl-3 ${
-                      entry.role === "user"
-                        ? "border-accent text-foreground"
-                        : "border-primary text-foreground/90"
-                    }`}
-                  >
-                    <div className={`text-[9px] tracking-[0.4em] uppercase mb-1 ${entry.role === "user" ? "text-accent" : "text-primary"}`}>
-                      {entry.role === "user" ? "Florian" : "Jarvis"}
-                    </div>
-                    {entry.toolCalls && entry.toolCalls.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mb-1">
-                        {entry.toolCalls.map((t, j) => <ToolBadge key={j} name={t} />)}
+            </div>
+
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+              {session.map(msg => (
+                <div
+                  key={msg.id}
+                  className={`flex gap-3 ${msg.role === "user" ? "flex-row-reverse" : "flex-row"}`}
+                >
+                  {/* Avatar dot */}
+                  <div className={`w-6 h-6 rounded-full shrink-0 flex items-center justify-center text-[10px] font-medium mt-0.5 ${
+                    msg.role === "user"
+                      ? "bg-secondary border border-border text-foreground"
+                      : "bg-primary/15 border border-primary/30 text-primary"
+                  }`}>
+                    {msg.role === "user" ? "F" : "J"}
+                  </div>
+
+                  <div className={`max-w-[75%] ${msg.role === "user" ? "items-end" : "items-start"} flex flex-col gap-1`}>
+                    {/* Tool badges */}
+                    {msg.tools && msg.tools.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {msg.tools.map(t => (
+                          <span key={t} className="px-2 py-0.5 rounded-full bg-primary/10 border border-primary/20 text-[10px] text-primary font-mono">
+                            {t}
+                          </span>
+                        ))}
                       </div>
                     )}
-                    <div className="font-mono text-[13px] whitespace-pre-wrap">{entry.text}</div>
-                  </div>
-                ))}
-                {/* Streaming in progress */}
-                {streamingText && (
-                  <div className="text-sm leading-relaxed border-l-2 pl-3 border-primary text-foreground/90">
-                    <div className="text-[9px] tracking-[0.4em] uppercase mb-1 text-primary">Jarvis</div>
-                    <div className="font-mono text-[13px] whitespace-pre-wrap">
-                      {streamingText}
-                      <span className="inline-block w-1.5 h-3 bg-primary ml-0.5 animate-pulse" />
+                    {/* Bubble */}
+                    <div className={`px-3.5 py-2.5 rounded-2xl text-sm leading-relaxed ${
+                      msg.role === "user"
+                        ? "bg-secondary border border-border text-foreground rounded-tr-sm"
+                        : "bg-primary/8 border border-primary/15 text-foreground rounded-tl-sm"
+                    }`}>
+                      {msg.content || (msg.streaming && <span className="cursor-blink text-primary">_</span>)}
+                      {msg.streaming && msg.content && <span className="cursor-blink text-primary ml-0.5">_</span>}
                     </div>
                   </div>
-                )}
-                <div ref={transcriptEndRef} />
-              </div>
-            </aside>
-          </div>
-        </div>
-      </JarvisLayout>
+                </div>
+              ))}
+              <div ref={sessionEndRef} />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </>
   );
-}
-
-function ClockDisplay() {
-  const [time, setTime] = useState(() => new Date());
-  useEffect(() => {
-    const t = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(t);
-  }, []);
-  return <>{time.toLocaleDateString()} · {time.toLocaleTimeString()}</>;
-}
-
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = reject;
-    reader.onloadend = () => {
-      const result = reader.result as string;
-      const idx = result.indexOf(",");
-      resolve(idx >= 0 ? result.slice(idx + 1) : result);
-    };
-    reader.readAsDataURL(blob);
-  });
 }

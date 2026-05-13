@@ -17,11 +17,19 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
-import { History, Play, Plus, Trash2, Wrench } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronUp, History, Pencil, Play, Plus, Trash2, Zap } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+const METHOD_COLORS: Record<Method, string> = {
+  GET: "text-emerald-400/70",
+  POST: "text-[#00d4ff]/70",
+  PUT: "text-amber-400/70",
+  PATCH: "text-purple-400/70",
+  DELETE: "text-red-400/70",
+};
 
 export default function TasksPage() {
   const utils = trpc.useUtils();
@@ -56,8 +64,8 @@ export default function TasksPage() {
   const [url, setUrl] = useState("");
   const [headersJson, setHeadersJson] = useState("");
   const [body, setBody] = useState("");
-
   const [selectedRunsId, setSelectedRunsId] = useState<number | null>(null);
+
   const runsQuery = trpc.jarvis.taskRuns.useQuery(
     { taskId: selectedRunsId ?? 0 },
     { enabled: selectedRunsId !== null },
@@ -65,205 +73,201 @@ export default function TasksPage() {
 
   const openCreate = () => {
     setEditingId(null);
-    setName("");
-    setDescription("");
-    setMethod("POST");
-    setUrl("");
-    setHeadersJson("");
-    setBody("");
+    setName(""); setDescription(""); setMethod("POST"); setUrl(""); setHeadersJson(""); setBody("");
     setOpen(true);
   };
-
   const openEdit = (id: number) => {
     const t = list.data?.find(x => x.id === id);
     if (!t) return;
     setEditingId(id);
-    setName(t.name);
-    setDescription(t.description ?? "");
-    setMethod(t.method as Method);
-    setUrl(t.url);
-    setHeadersJson(t.headers ? JSON.stringify(t.headers, null, 2) : "");
-    setBody(t.body ?? "");
+    setName(t.name); setDescription(t.description ?? ""); setMethod(t.method as Method);
+    setUrl(t.url); setHeadersJson(t.headers ? JSON.stringify(t.headers, null, 2) : ""); setBody(t.body ?? "");
     setOpen(true);
   };
-
   const save = () => {
     let parsedHeaders: Record<string, string> | null = null;
     if (headersJson.trim()) {
-      try {
-        const parsed = JSON.parse(headersJson) as Record<string, string>;
-        parsedHeaders = parsed;
-      } catch {
-        toast.error("Headers must be valid JSON");
-        return;
-      }
+      try { parsedHeaders = JSON.parse(headersJson) as Record<string, string>; }
+      catch { toast.error("Headers must be valid JSON"); return; }
     }
-    upsert.mutate({
-      id: editingId ?? undefined,
-      name,
-      description: description || null,
-      method,
-      url,
-      headers: parsedHeaders,
-      body: body || null,
-    });
+    upsert.mutate({ id: editingId ?? undefined, name, description: description || null, method, url, headers: parsedHeaders, body: body || null });
   };
+
+  const inputCls = "bg-white/[0.04] border-white/[0.07] text-white/80 text-sm rounded-xl placeholder:text-white/20 focus:border-[#00d4ff]/30";
 
   return (
     <JarvisLayout>
-      <div className="container max-w-6xl mx-auto py-10 space-y-6">
-        <div className="flex items-end justify-between">
-          <div>
-            <div className="text-[10px] tracking-[0.4em] uppercase text-primary/80 font-display">
-              Automation
+      <div className="max-w-4xl mx-auto px-8 py-10 space-y-8">
+        {/* Header */}
+        <div className="flex items-start justify-between">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <Zap size={15} className="text-[#00d4ff]/60" />
+              <h1 className="text-sm font-semibold text-white/80">Automation Tasks</h1>
             </div>
-            <h1 className="font-display text-2xl glow-text-cyan flex items-center gap-3">
-              <Wrench className="h-5 w-5" /> Tasks
-            </h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              Pre-configured HTTP actions. Reference vault secrets with{" "}
-              <code className="font-mono text-primary">{"{{vault:LABEL}}"}</code>.
+            <p className="text-xs text-white/30 leading-relaxed">
+              Pre-configured HTTP actions. Reference vault secrets via{" "}
+              <code className="font-mono text-[#00d4ff]/60 bg-[#00d4ff]/[0.08] px-1.5 py-0.5 rounded text-[11px]">
+                {"{{vault:LABEL}}"}
+              </code>
             </p>
           </div>
-          <Button onClick={openCreate} className="font-display tracking-[0.3em]">
-            <Plus className="h-4 w-4 mr-2" /> New Task
+          <Button
+            onClick={openCreate}
+            size="sm"
+            className="bg-white/[0.07] hover:bg-white/[0.12] text-white/70 border border-white/[0.08] hover:border-white/[0.15] text-xs font-medium h-8"
+          >
+            <Plus size={13} className="mr-1.5" />
+            New Task
           </Button>
         </div>
 
-        <div className="grid md:grid-cols-2 gap-4">
+        {/* Task list */}
+        <div className="space-y-3">
+          {!list.data?.length && (
+            <div className="rounded-2xl border border-white/[0.06] px-6 py-10 text-center text-xs text-white/20">
+              No tasks configured yet
+            </div>
+          )}
           {list.data?.map(task => (
-            <div key={task.id} className="hud-panel hud-corner p-4 space-y-3">
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <div className="font-display tracking-[0.2em] text-primary">{task.name}</div>
-                  <div className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground mt-1">
-                    {task.method} · {task.url.length > 48 ? task.url.slice(0, 48) + "…" : task.url}
-                  </div>
+            <div key={task.id} className="rounded-2xl border border-white/[0.07] overflow-hidden">
+              <div className="px-5 py-4 flex items-center gap-4">
+                <div className="w-8 h-8 rounded-xl bg-[#00d4ff]/[0.07] flex items-center justify-center shrink-0">
+                  <Zap size={13} className="text-[#00d4ff]/50" />
                 </div>
-                <div className="flex items-center gap-1">
-                  <Button
-                    size="sm"
+                <div className="flex-1 min-w-0">
+                  <p className="text-[13px] font-medium text-white/80">{task.name}</p>
+                  <p className="text-[11px] text-white/25 mt-0.5 truncate">
+                    <span className={`font-mono font-semibold ${METHOD_COLORS[task.method as Method] ?? "text-white/40"}`}>
+                      {task.method}
+                    </span>
+                    {" "}
+                    {task.url.length > 55 ? task.url.slice(0, 55) + "…" : task.url}
+                  </p>
+                  {task.description && (
+                    <p className="text-[11px] text-white/20 mt-0.5">{task.description}</p>
+                  )}
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
                     onClick={() => run.mutate({ id: task.id, triggeredBy: "manual" })}
                     disabled={run.isPending}
+                    className="w-7 h-7 rounded-lg flex items-center justify-center text-[#00d4ff]/50 hover:text-[#00d4ff] hover:bg-[#00d4ff]/[0.1] transition-colors disabled:opacity-40"
+                    title="Run now"
                   >
-                    <Play className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => setSelectedRunsId(task.id)}
+                    <Play size={12} />
+                  </button>
+                  <button
+                    onClick={() => setSelectedRunsId(selectedRunsId === task.id ? null : task.id)}
+                    className="w-7 h-7 rounded-lg flex items-center justify-center text-white/25 hover:text-white/60 hover:bg-white/[0.06] transition-colors"
+                    title="Run history"
                   >
-                    <History className="h-4 w-4" />
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => openEdit(task.id)}>
-                    Edit
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="text-destructive"
+                    {selectedRunsId === task.id ? <ChevronUp size={12} /> : <History size={12} />}
+                  </button>
+                  <button
+                    onClick={() => openEdit(task.id)}
+                    className="w-7 h-7 rounded-lg flex items-center justify-center text-white/25 hover:text-white/60 hover:bg-white/[0.06] transition-colors"
+                  >
+                    <Pencil size={12} />
+                  </button>
+                  <button
                     onClick={() => del.mutate({ id: task.id })}
+                    className="w-7 h-7 rounded-lg flex items-center justify-center text-white/20 hover:text-red-400/70 hover:bg-red-400/[0.08] transition-colors"
                   >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
+                    <Trash2 size={12} />
+                  </button>
                 </div>
               </div>
-              {task.description && (
-                <div className="text-xs text-muted-foreground">{task.description}</div>
+
+              {/* Run history */}
+              {selectedRunsId === task.id && (
+                <div className="border-t border-white/[0.05] px-5 py-3 space-y-2">
+                  <p className="text-[10px] text-white/25 tracking-widest uppercase mb-2">Recent runs</p>
+                  {!runsQuery.data?.length && (
+                    <p className="text-xs text-white/15 italic">No runs yet</p>
+                  )}
+                  {runsQuery.data?.map(r => (
+                    <div key={r.id} className="flex items-start gap-3 text-[11px]">
+                      <CheckCircle2
+                        size={11}
+                        className={`mt-0.5 shrink-0 ${r.status === "success" ? "text-emerald-400/70" : "text-red-400/70"}`}
+                      />
+                      <span className="text-white/30 shrink-0">
+                        {new Date(r.createdAt).toLocaleString("de-DE", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                      <span className="text-white/20 shrink-0">HTTP {r.statusCode ?? "n/a"}</span>
+                      <span className="text-white/25 truncate font-mono">{r.responseSnippet}</span>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           ))}
         </div>
-
-        {selectedRunsId !== null && (
-          <div className="hud-panel hud-corner p-4">
-            <div className="flex items-center justify-between mb-3">
-              <div className="text-[10px] tracking-[0.4em] uppercase text-primary/80 font-display">
-                Recent runs
-              </div>
-              <Button variant="ghost" size="sm" onClick={() => setSelectedRunsId(null)}>
-                Close
-              </Button>
-            </div>
-            <div className="space-y-2">
-              {runsQuery.data?.length === 0 && (
-                <div className="text-xs text-muted-foreground italic">No runs yet.</div>
-              )}
-              {runsQuery.data?.map(r => (
-                <div key={r.id} className="flex gap-3 items-start text-xs font-mono">
-                  <span
-                    className={
-                      r.status === "success" ? "text-primary" : "text-destructive"
-                    }
-                  >
-                    {r.status.toUpperCase()}
-                  </span>
-                  <span className="text-muted-foreground">{new Date(r.createdAt).toLocaleString()}</span>
-                  <span className="text-muted-foreground">HTTP {r.statusCode ?? "n/a"}</span>
-                  <span className="truncate flex-1">{r.responseSnippet}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
 
+      {/* Dialog */}
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="hud-panel max-w-2xl">
+        <DialogContent className="bg-[#0a0a0f] border border-white/[0.08] rounded-2xl max-w-xl">
           <DialogHeader>
-            <DialogTitle className="font-display tracking-[0.25em] glow-text-cyan">
+            <DialogTitle className="text-sm font-semibold text-white/80">
               {editingId ? "Edit Task" : "New Task"}
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
+          <div className="space-y-4 py-2">
             <Field label="Name">
-              <Input value={name} onChange={e => setName(e.target.value)} />
+              <Input value={name} onChange={e => setName(e.target.value)} className={inputCls} placeholder="Send weekly report" />
             </Field>
-            <Field label="Description">
-              <Textarea rows={2} value={description} onChange={e => setDescription(e.target.value)} />
+            <Field label="Description (optional)">
+              <Textarea rows={2} value={description} onChange={e => setDescription(e.target.value)} className={`${inputCls} resize-none`} />
             </Field>
-            <div className="grid grid-cols-[120px_1fr] gap-3">
+            <div className="grid grid-cols-[110px_1fr] gap-3">
               <Field label="Method">
                 <Select value={method} onValueChange={v => setMethod(v as Method)}>
-                  <SelectTrigger>
+                  <SelectTrigger className={`${inputCls} h-9`}>
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="bg-[#0f0f1a] border-white/[0.08]">
                     {(["GET", "POST", "PUT", "PATCH", "DELETE"] as Method[]).map(m => (
-                      <SelectItem key={m} value={m}>
-                        {m}
-                      </SelectItem>
+                      <SelectItem key={m} value={m} className="text-white/70 text-xs focus:bg-white/[0.06]">{m}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </Field>
               <Field label="URL">
-                <Input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://..." />
+                <Input value={url} onChange={e => setUrl(e.target.value)} className={inputCls} placeholder="https://api.example.com/endpoint" />
               </Field>
             </div>
-            <Field label="Headers (JSON)">
+            <Field label='Headers (JSON) — use {{vault:LABEL}} for secrets'>
               <Textarea
-                rows={4}
+                rows={3}
                 value={headersJson}
                 onChange={e => setHeadersJson(e.target.value)}
+                className={`${inputCls} resize-none font-mono text-xs`}
                 placeholder='{"Authorization": "Bearer {{vault:TripleWhale_API}}"}'
               />
             </Field>
-            <Field label="Body">
+            <Field label="Body (optional)">
               <Textarea
-                rows={4}
+                rows={3}
                 value={body}
                 onChange={e => setBody(e.target.value)}
+                className={`${inputCls} resize-none font-mono text-xs`}
                 placeholder='{"shop": "velur.de"}'
               />
             </Field>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>
+          <DialogFooter className="gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setOpen(false)} className="text-white/40 hover:text-white/70 text-xs">
               Cancel
             </Button>
-            <Button onClick={save} disabled={upsert.isPending}>
-              Save
+            <Button
+              size="sm"
+              onClick={save}
+              disabled={upsert.isPending}
+              className="bg-[#00d4ff]/15 hover:bg-[#00d4ff]/25 text-[#00d4ff] border border-[#00d4ff]/20 text-xs h-8 rounded-xl"
+            >
+              {upsert.isPending ? "Saving…" : "Save Task"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -274,10 +278,8 @@ export default function TasksPage() {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="block space-y-2">
-      <span className="text-[10px] tracking-[0.4em] uppercase text-primary/70 font-display">
-        {label}
-      </span>
+    <label className="block space-y-1.5">
+      <span className="text-[11px] text-white/35 font-medium">{label}</span>
       {children}
     </label>
   );

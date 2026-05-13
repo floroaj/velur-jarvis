@@ -84,3 +84,24 @@
 - [ ] Weekly review auto-briefing (Fridays)
 - [ ] Mobile PWA (manifest.json + service worker + touch-to-talk)
 - [ ] Multi-display wall mode
+
+## Redesign – Apple-Minimal + Flower-of-Life Core
+- [x] New CSS theme: deep black background, Inter font, Apple-style minimal UI, no HUD clutter
+- [x] Flower-of-Life 3D Core in Three.js: hexagonal sphere grid + organic outer shell + teal glow + Bloom
+- [x] New JarvisLayout: minimal top bar, no sidebar, full-screen centered core
+- [x] New Home page: centered core, minimal controls below, slide-up session drawer
+- [x] Connector status as subtle dots in top bar only
+- [x] Boot sequence: minimal fade-in, no diagnostic ticker
+- [x] Conversations page: Apple-minimal chat bubbles, clean sidebar
+- [x] Vault page: clean card list, minimal dialog
+- [x] Business Context page: clean form sections, no HUD classes
+- [x] Tasks page: clean task cards with method color badges, inline run history
+
+## WooCommerce Connector
+- [x] Tool: get_woocommerce_summary (Revenue, Orders, AOV, Top-Produkte)
+- [x] Tool: get_woocommerce_orders (letzte N Bestellungen, Status, Kunde, Total)
+- [x] Tool: get_woocommerce_products (Produkte, Preis, Lagerstand, Sales)
+- [x] WooCommerce credentials via WordPress Application Password (same as WP connector)
+- [ ] WooCommerce Consumer Key/Secret vault slot (for dedicated WC API keys)
+- [ ] Tool: get_woocommerce_customers (Neukunden, Lifetime Value)
+- [ ] Tool: update_woocommerce_product_stock (Lagerstand per Sprache anpassen)

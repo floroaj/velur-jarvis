@@ -15,16 +15,17 @@ const MORNING_BRIEFING_JOB_NAME = "jarvis-morning-briefing";
  */
 export async function ensureMorningBriefingJob(userSession: string): Promise<void> {
   try {
-    let jobList: Array<{ name: string; taskUid: string; isEnable: boolean }> = [];
+    let found: { name: string; taskUid: string; isEnable: boolean } | undefined;
     try {
       const existing = await listHeartbeatJobs(userSession);
-      jobList = existing?.jobs ?? [];
+      const jobList: Array<{ name: string; taskUid: string; isEnable: boolean }> = Array.isArray(existing?.jobs)
+        ? existing.jobs
+        : [];
+      found = jobList.find(j => j.name === MORNING_BRIEFING_JOB_NAME);
     } catch (listErr) {
       // If listing fails (e.g. first run, auth issue), try to create directly
       console.warn("[Jarvis] Could not list heartbeat jobs, attempting create:", listErr instanceof Error ? listErr.message : listErr);
     }
-
-    const found = jobList.find(j => j.name === MORNING_BRIEFING_JOB_NAME);
 
     if (found) {
       if (!found.isEnable) {

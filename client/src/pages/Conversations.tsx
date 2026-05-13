@@ -1,7 +1,7 @@
 import { JarvisLayout } from "@/components/JarvisLayout";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
-import { MessageSquare, Trash2 } from "lucide-react";
+import { ChevronRight, MessageSquare, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -15,105 +15,150 @@ export default function Conversations() {
   );
   const del = trpc.jarvis.deleteConversation.useMutation({
     onSuccess: () => {
-      toast.success("Transcript erased");
+      toast.success("Session deleted");
       setSelected(null);
       utils.jarvis.listConversations.invalidate();
     },
   });
 
+  const fmt = (d: Date | string) =>
+    new Date(d).toLocaleString("de-DE", {
+      day: "2-digit",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
   return (
     <JarvisLayout>
-      <div className="container max-w-6xl mx-auto py-10 grid md:grid-cols-[280px_1fr] gap-6">
-        <aside className="hud-panel hud-corner p-4 max-h-[70vh] overflow-y-auto">
-          <div className="text-[10px] tracking-[0.4em] uppercase text-primary/80 font-display mb-3">
-            Transcripts
+      <div className="flex h-full min-h-0">
+        {/* Sidebar */}
+        <aside className="w-72 shrink-0 border-r border-white/[0.06] flex flex-col">
+          <div className="px-6 py-5 border-b border-white/[0.06]">
+            <h1 className="text-xs font-semibold text-white/50 tracking-widest uppercase">
+              Transcripts
+            </h1>
+            <p className="text-[11px] text-white/25 mt-1">
+              {list.data?.length ?? 0} sessions
+            </p>
           </div>
-          {list.data?.length === 0 && (
-            <div className="text-xs text-muted-foreground italic">No sessions yet.</div>
-          )}
-          <div className="space-y-2">
+          <div className="flex-1 overflow-y-auto py-2">
+            {list.isLoading && (
+              <div className="px-6 py-8 text-center text-white/20 text-xs">Loading…</div>
+            )}
+            {!list.isLoading && !list.data?.length && (
+              <div className="px-6 py-8 text-center text-white/20 text-xs">
+                No sessions yet
+              </div>
+            )}
             {list.data?.map(c => (
               <button
                 key={c.id}
                 onClick={() => setSelected(c.id)}
-                className={`w-full text-left p-3 rounded-md border transition-colors ${
+                className={`w-full text-left px-5 py-3 flex items-start gap-3 transition-colors group ${
                   selected === c.id
-                    ? "border-primary/60 bg-primary/10 text-primary"
-                    : "border-primary/15 hover:border-primary/40"
+                    ? "bg-white/[0.06]"
+                    : "hover:bg-white/[0.03]"
                 }`}
               >
-                <div className="flex items-center gap-2">
-                  <MessageSquare className="h-3.5 w-3.5 text-primary" />
-                  <span className="font-mono text-xs truncate">{c.title}</span>
+                <MessageSquare
+                  size={13}
+                  className={`mt-0.5 shrink-0 transition-colors ${
+                    selected === c.id ? "text-[#00d4ff]/70" : "text-white/20 group-hover:text-white/40"
+                  }`}
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="text-[13px] text-white/75 truncate leading-snug">{c.title || "Untitled"}</p>
+                  <p className="text-[10px] text-white/25 mt-0.5">{fmt(c.updatedAt)}</p>
                 </div>
-                <div className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground mt-1">
-                  {new Date(c.updatedAt).toLocaleString()}
-                </div>
+                {selected === c.id && (
+                  <ChevronRight size={11} className="shrink-0 text-[#00d4ff]/50 mt-1" />
+                )}
               </button>
             ))}
           </div>
         </aside>
 
-        <section className="hud-panel hud-corner p-5 min-h-[70vh]">
-          {selected === null && (
-            <div className="text-xs text-muted-foreground italic">
-              Select a transcript to inspect.
+        {/* Detail panel */}
+        <main className="flex-1 min-w-0 flex flex-col">
+          {selected === null ? (
+            <div className="flex-1 flex items-center justify-center">
+              <div className="text-center space-y-3">
+                <MessageSquare size={28} className="mx-auto text-white/[0.08]" />
+                <p className="text-xs text-white/20">Select a session to view transcript</p>
+              </div>
             </div>
-          )}
-          {selected !== null && (
+          ) : (
             <>
-              <div className="flex items-center justify-between mb-4">
+              {/* Header */}
+              <div className="px-8 py-4 border-b border-white/[0.06] flex items-center justify-between">
                 <div>
-                  <div className="text-[10px] tracking-[0.4em] uppercase text-primary/80 font-display">
-                    Transcript
-                  </div>
-                  <h2 className="font-display text-lg glow-text-cyan mt-1">
-                    {detail.data?.conversation.title}
+                  <h2 className="text-sm font-medium text-white/80">
+                    {detail.data?.conversation.title || "Session"}
                   </h2>
+                  {detail.data?.conversation.createdAt && (
+                    <p className="text-[11px] text-white/25 mt-0.5">
+                      {fmt(detail.data.conversation.createdAt)}
+                    </p>
+                  )}
                 </div>
                 <Button
                   variant="ghost"
                   size="sm"
+                  className="text-white/25 hover:text-red-400/80 hover:bg-red-400/[0.08] h-8 w-8 p-0"
                   onClick={() => del.mutate({ id: selected })}
-                  className="text-destructive"
                 >
-                  <Trash2 className="h-4 w-4 mr-2" />
-                  Erase
+                  <Trash2 size={13} />
                 </Button>
               </div>
-              <div className="space-y-4">
+
+              {/* Messages */}
+              <div className="flex-1 overflow-y-auto px-8 py-6 space-y-5">
                 {detail.data?.messages.map(m => (
                   <div
                     key={m.id}
-                    className={`border-l-2 pl-3 ${
-                      m.role === "user"
-                        ? "border-accent"
-                        : m.role === "assistant"
-                          ? "border-primary"
-                          : "border-muted-foreground"
-                    }`}
+                    className={`flex gap-3 ${m.role === "user" ? "flex-row-reverse" : ""}`}
                   >
+                    {/* Avatar dot */}
                     <div
-                      className={`text-[9px] tracking-[0.4em] uppercase mb-1 ${
+                      className={`w-6 h-6 rounded-full shrink-0 flex items-center justify-center text-[9px] font-bold mt-0.5 ${
                         m.role === "user"
-                          ? "text-accent"
+                          ? "bg-white/[0.08] text-white/50"
                           : m.role === "assistant"
-                            ? "text-primary"
-                            : "text-muted-foreground"
+                          ? "bg-[#00d4ff]/10 text-[#00d4ff]/80"
+                          : "bg-white/[0.04] text-white/20"
                       }`}
                     >
-                      {m.role === "user" ? "Florian" : m.role === "assistant" ? "Jarvis" : "System"}
-                      <span className="ml-3 text-muted-foreground normal-case tracking-normal">
-                        {new Date(m.createdAt).toLocaleTimeString()}
+                      {m.role === "user" ? "F" : m.role === "assistant" ? "J" : "S"}
+                    </div>
+
+                    {/* Bubble */}
+                    <div
+                      className={`max-w-[68%] flex flex-col gap-1 ${
+                        m.role === "user" ? "items-end" : "items-start"
+                      }`}
+                    >
+                      <div
+                        className={`rounded-2xl px-4 py-2.5 text-[13px] leading-relaxed ${
+                          m.role === "user"
+                            ? "bg-white/[0.07] text-white/75 rounded-tr-sm"
+                            : m.role === "assistant"
+                            ? "bg-[#00d4ff]/[0.07] text-white/80 rounded-tl-sm border border-[#00d4ff]/[0.12]"
+                            : "bg-white/[0.03] text-white/30 text-xs italic"
+                        }`}
+                      >
+                        {m.content}
+                      </div>
+                      <span className="text-[10px] text-white/15 px-1">
+                        {fmt(m.createdAt)}
                       </span>
                     </div>
-                    <div className="font-mono text-[13px] whitespace-pre-wrap">{m.content}</div>
                   </div>
                 ))}
               </div>
             </>
           )}
-        </section>
+        </main>
       </div>
     </JarvisLayout>
   );

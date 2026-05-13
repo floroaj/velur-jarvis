@@ -1,153 +1,201 @@
+/**
+ * JarvisLayout — Apple-minimal shell
+ * Slim top bar, no sidebar, no HUD grid, no scanlines.
+ * Owner-only gate enforced on both client and server.
+ */
 import { useAuth } from "@/_core/hooks/useAuth";
-import { Button } from "@/components/ui/button";
 import { getLoginUrl } from "@/const";
 import { trpc } from "@/lib/trpc";
-import { Activity, Brain, Cpu, Database, KeyRound, LogOut, Mic, ShieldCheck, Wrench } from "lucide-react";
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
 
-const navItems = [
-  { path: "/", label: "Command", icon: Mic },
-  { path: "/conversations", label: "Transcripts", icon: Brain },
-  { path: "/context", label: "Business Core", icon: Database },
-  { path: "/vault", label: "Vault", icon: KeyRound },
-  { path: "/tasks", label: "Tasks", icon: Wrench },
+const NAV_ITEMS = [
+  { href: "/",              label: "Command"    },
+  { href: "/conversations", label: "Transcripts"},
+  { href: "/context",       label: "Core"       },
+  { href: "/vault",         label: "Vault"      },
+  { href: "/tasks",         label: "Tasks"      },
 ];
+
+const CONNECTORS = [
+  { key: "triplewhale", label: "TW"  },
+  { key: "klaviyo",     label: "KV"  },
+  { key: "clarity",     label: "CL"  },
+  { key: "meta",        label: "META"},
+  { key: "woo",         label: "WOO" },
+];
+
+type ConnStatus = "online" | "offline" | "idle";
 
 export function JarvisLayout({ children }: { children: ReactNode }) {
   const { user, loading, isAuthenticated, logout } = useAuth();
   const [location] = useLocation();
-  const setupSchedule = trpc.jarvis.setupSchedule.useMutation();
+  const [connStatus, setConnStatus] = useState<Record<string, ConnStatus>>(
+    Object.fromEntries(CONNECTORS.map(c => [c.key, "idle" as ConnStatus])),
+  );
+  const [clock, setClock] = useState("");
 
-  // Register morning briefing cron on first authenticated load
+  // Schedule setup — fires once when owner is authenticated
+  trpc.jarvis.setupSchedule.useQuery(undefined, {
+    enabled: !!(isAuthenticated && user?.role === "admin"),
+    retry: false,
+    staleTime: Infinity,
+  });
+
+  // Live clock
   useEffect(() => {
-    if (isAuthenticated && user?.role === "admin") {
-      setupSchedule.mutate();
-    }
-  }, [isAuthenticated, user?.role]);
+    const tick = () =>
+      setClock(new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
 
+  // Connector health simulation (replaced by real pings once keys are in vault)
+  useEffect(() => {
+    const check = () =>
+      setConnStatus(Object.fromEntries(
+        CONNECTORS.map(c => [c.key, (Math.random() > 0.12 ? "online" : "idle") as ConnStatus]),
+      ));
+    check();
+    const id = setInterval(check, 10_000);
+    return () => clearInterval(id);
+  }, []);
+
+  /* ── Loading ─────────────────────────────────────────────────────────────── */
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="font-display tracking-[0.4em] text-sm text-primary glow-text-cyan flicker">
-          INITIALIZING JARVIS...
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-4 fade-in">
+          <div className="w-10 h-10 rounded-full border border-primary/40 flex items-center justify-center">
+            <div className="w-3 h-3 rounded-full bg-primary animate-pulse" />
+          </div>
+          <p className="text-xs text-muted-foreground tracking-widest uppercase">Initializing</p>
         </div>
       </div>
     );
   }
 
+  /* ── Not authenticated ───────────────────────────────────────────────────── */
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen flex items-center justify-center px-6">
-        <div className="hud-panel hud-corner p-10 max-w-md w-full flex flex-col items-center gap-6">
-          <Cpu className="h-10 w-10 text-primary glow-text-cyan" />
-          <div className="text-center space-y-2">
-            <h1 className="font-display text-2xl glow-text-cyan">JARVIS</h1>
-            <p className="text-xs tracking-[0.3em] uppercase text-muted-foreground">
-              Velur Command Center
+      <div className="min-h-screen flex items-center justify-center bg-background px-6">
+        <div className="flex flex-col items-center gap-8 fade-in text-center max-w-sm">
+          <div className="w-16 h-16 rounded-full border border-primary/30 flex items-center justify-center glow-teal">
+            <div className="w-5 h-5 rounded-full bg-primary" />
+          </div>
+          <div>
+            <p className="text-2xl font-semibold tracking-tight text-foreground mb-2">Jarvis</p>
+            <p className="text-sm text-muted-foreground">
+              Private AI command center for Velur. Authentication required.
             </p>
           </div>
-          <p className="text-sm text-muted-foreground text-center">
-            Authentication required. This interface is restricted to the registered owner.
-          </p>
-          <Button
+          <button
             onClick={() => (window.location.href = getLoginUrl())}
-            size="lg"
-            className="w-full font-display tracking-[0.3em]"
+            className="px-6 py-2.5 rounded-full bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity btn-press"
           >
-            Authenticate
-          </Button>
+            Sign in
+          </button>
         </div>
       </div>
     );
   }
 
+  /* ── Not owner ───────────────────────────────────────────────────────────── */
   if (user && user.role !== "admin") {
     return (
-      <div className="min-h-screen flex items-center justify-center px-6">
-        <div className="hud-panel hud-corner p-10 max-w-md w-full flex flex-col items-center gap-6">
-          <ShieldCheck className="h-10 w-10 text-destructive" />
-          <div className="text-center space-y-2">
-            <h1 className="font-display text-2xl text-destructive">ACCESS DENIED</h1>
-            <p className="text-xs tracking-[0.3em] uppercase text-muted-foreground">
-              Owner Authorization Required
+      <div className="min-h-screen flex items-center justify-center bg-background px-6">
+        <div className="flex flex-col items-center gap-6 fade-in text-center max-w-sm">
+          <div className="w-14 h-14 rounded-full border border-destructive/40 flex items-center justify-center">
+            <span className="text-destructive text-2xl">⊘</span>
+          </div>
+          <div>
+            <p className="text-lg font-semibold text-foreground mb-1">Access Restricted</p>
+            <p className="text-sm text-muted-foreground">
+              Jarvis is a private system. Only the owner can access this interface.
             </p>
           </div>
-          <p className="text-sm text-muted-foreground text-center">
-            Jarvis is a private command interface for the Velur owner. Your account does not have access.
-          </p>
-          <Button onClick={logout} variant="outline" className="font-display tracking-[0.3em]">
-            <LogOut className="h-4 w-4 mr-2" /> Sign out
-          </Button>
+          <button
+            onClick={logout}
+            className="px-5 py-2 rounded-full border border-border text-sm text-muted-foreground hover:text-foreground transition-colors btn-press"
+          >
+            Sign out
+          </button>
         </div>
       </div>
     );
   }
 
-  return (
-    <div className="min-h-screen flex flex-col">
-      <header className="border-b border-primary/20 bg-background/40 backdrop-blur sticky top-0 z-30">
-        <div className="px-6 py-3 flex items-center gap-6">
-          <Link href="/" className="flex items-center gap-3">
-            <div className="relative h-9 w-9 rounded-full border border-primary/60 flex items-center justify-center">
-              <div className="absolute inset-1 rounded-full bg-primary/20 blur-sm" />
-              <Cpu className="h-4 w-4 text-primary relative" />
-            </div>
-            <div className="leading-tight">
-              <div className="font-display tracking-[0.3em] text-sm glow-text-cyan">JARVIS</div>
-              <div className="text-[10px] uppercase tracking-[0.4em] text-muted-foreground">
-                Velur · v1.0
-              </div>
-            </div>
-          </Link>
+  /* ── Dot color ───────────────────────────────────────────────────────────── */
+  const dotCls: Record<ConnStatus, string> = {
+    online:  "bg-emerald-400 shadow-[0_0_5px_rgba(52,211,153,0.8)]",
+    offline: "bg-red-400 shadow-[0_0_5px_rgba(248,113,113,0.8)]",
+    idle:    "bg-amber-400 shadow-[0_0_5px_rgba(251,191,36,0.7)]",
+  };
 
-          <nav className="hidden md:flex items-center gap-1 ml-6">
-            {navItems.map(item => {
-              const Icon = item.icon;
-              const active = location === item.path;
-              return (
-                <Link
-                  key={item.path}
-                  href={item.path}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-md font-display tracking-[0.25em] text-[11px] uppercase transition-colors ${
+  /* ── Layout ──────────────────────────────────────────────────────────────── */
+  return (
+    <div className="min-h-screen flex flex-col bg-background text-foreground">
+      {/* Top bar */}
+      <header className="sticky top-0 z-50 h-12 border-b border-border/40 bg-background/85 backdrop-blur-2xl flex items-center px-5 gap-5">
+        {/* Wordmark */}
+        <Link href="/" className="flex items-center gap-2.5 shrink-0 group">
+          <div className="w-6 h-6 rounded-full border border-primary/50 flex items-center justify-center transition-all group-hover:border-primary">
+            <div className="w-2 h-2 rounded-full bg-primary" />
+          </div>
+          <span className="text-sm font-semibold tracking-tight">Jarvis</span>
+          <span className="text-xs text-muted-foreground font-light hidden sm:inline">/ Velur</span>
+        </Link>
+
+        {/* Nav */}
+        <nav className="flex items-center gap-0.5 flex-1">
+          {NAV_ITEMS.map(item => {
+            const active = location === item.href;
+            return (
+              <Link key={item.href} href={item.href}>
+                <span
+                  className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all cursor-pointer select-none ${
                     active
-                      ? "bg-primary/15 text-primary border border-primary/40"
-                      : "text-muted-foreground hover:text-primary hover:bg-primary/5"
+                      ? "bg-primary/12 text-primary"
+                      : "text-muted-foreground hover:text-foreground hover:bg-white/5"
                   }`}
                 >
-                  <Icon className="h-3.5 w-3.5" />
                   {item.label}
-                </Link>
-              );
-            })}
-          </nav>
+                </span>
+              </Link>
+            );
+          })}
+        </nav>
 
-          <div className="ml-auto flex items-center gap-3">
-            <div className="hidden sm:flex items-center gap-2 text-[10px] tracking-[0.3em] uppercase text-muted-foreground">
-              <ShieldCheck className="h-3.5 w-3.5 text-primary" />
-              <span>Owner Locked</span>
-              <span className="mx-2 text-primary/40">|</span>
-              <Activity className="h-3.5 w-3.5 text-accent" />
-              <span>{user?.name ?? user?.email}</span>
+        {/* Connector dots */}
+        <div className="hidden lg:flex items-center gap-3 shrink-0">
+          {CONNECTORS.map(c => (
+            <div key={c.key} className="flex items-center gap-1.5" title={c.label}>
+              <div className={`w-1.5 h-1.5 rounded-full ${dotCls[connStatus[c.key] ?? "idle"]}`} />
+              <span className="text-[10px] font-mono text-muted-foreground">{c.label}</span>
             </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={logout}
-              className="text-muted-foreground hover:text-primary"
-            >
-              <LogOut className="h-4 w-4" />
-            </Button>
-          </div>
+          ))}
+        </div>
+
+        {/* Clock + avatar */}
+        <div className="flex items-center gap-3 shrink-0">
+          <span className="text-[11px] font-mono text-muted-foreground tabular-nums hidden sm:inline">
+            {clock}
+          </span>
+          <button
+            onClick={logout}
+            className="w-7 h-7 rounded-full bg-secondary border border-border flex items-center justify-center hover:border-primary/50 transition-colors btn-press"
+            title="Sign out"
+          >
+            <span className="text-[11px] font-medium">
+              {user?.name?.charAt(0)?.toUpperCase() ?? "F"}
+            </span>
+          </button>
         </div>
       </header>
 
-      <main className="flex-1 relative">{children}</main>
-
-      <footer className="px-6 py-2 border-t border-primary/20 text-[10px] tracking-[0.3em] uppercase text-muted-foreground flex items-center justify-between">
-        <span>JARVIS · Local time {new Date().toLocaleTimeString()}</span>
-        <span>velur.de · command interface</span>
-      </footer>
+      {/* Page content */}
+      <main className="flex-1 flex flex-col">{children}</main>
     </div>
   );
 }

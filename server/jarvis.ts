@@ -437,7 +437,7 @@ export const jarvisRouter = router({
     }),
 
   setupSchedule: ownerProcedure
-    .mutation(async ({ ctx }) => {
+    .query(async ({ ctx }) => {
       const { ensureMorningBriefingJob } = await import("./jarvisSchedule");
       const { COOKIE_NAME } = await import("../shared/const");
       const { parse: parseCookieHeader } = await import("cookie");
