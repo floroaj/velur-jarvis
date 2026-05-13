@@ -20,9 +20,9 @@ import {
   Vignette,
 } from "@react-three/postprocessing";
 import { BlendFunction } from "postprocessing";
-import { Environment } from "@react-three/drei";
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useEffect } from "react";
 import * as THREE from "three";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import type { OrbState } from "./VoiceOrb";
 
 // State → color map
@@ -45,6 +45,23 @@ const STATE_GLOW: Record<OrbState, GlowProfile> = {
 
 function lerp(a: number, b: number, t: number) {
   return a + (b - a) * t;
+}
+
+// ── Procedural environment (no CDN, no external HDR file) ──────────────────────
+function ProceduralEnv() {
+  const { gl, scene } = useThree();
+  useEffect(() => {
+    const pmrem = new THREE.PMREMGenerator(gl);
+    pmrem.compileEquirectangularShader();
+    const envTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    scene.environment = envTexture;
+    return () => {
+      envTexture.dispose();
+      pmrem.dispose();
+      scene.environment = null;
+    };
+  }, [gl, scene]);
+  return null;
 }
 
 // ── Slow auto-orbit camera ────────────────────────────────────────────────────
@@ -298,7 +315,7 @@ function Scene({ state, amplitude }: { state: OrbState; amplitude: number }) {
     <>
       <CameraOrbit radius={4.5} speed={0.05} />
 
-      <Environment preset="city" background={false} environmentIntensity={0.25} />
+      <ProceduralEnv />
 
       <ambientLight intensity={0.05} />
       <pointLight position={[0, 0, 3]} intensity={0.55} color="#00e5ff" />

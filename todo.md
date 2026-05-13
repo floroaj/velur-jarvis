@@ -137,3 +137,6 @@
 - [x] Tests: connectorHealth (3 Tests: format, null-guard, error-status)
 - [x] Tests: historySummarizer (3 Tests: pass-through, system-filter, fallback)
 - [x] Alle 39 Tests grün (6 Test-Dateien)
+
+## HDRI Fix
+- [x] Replace `<Environment preset="city" />` with procedural `RoomEnvironment` (no CDN dependency, no external HDR file)
