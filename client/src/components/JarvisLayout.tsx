@@ -6,7 +6,7 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { getLoginUrl } from "@/const";
 import { trpc } from "@/lib/trpc";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 
 const NAV_ITEMS = [
@@ -34,7 +34,8 @@ export function JarvisLayout({ children }: { children: ReactNode }) {
     Object.fromEntries(CONNECTORS.map(c => [c.key, "idle" as ConnStatus])),
   );
   const [connTooltip, setConnTooltip] = useState<Record<string, string>>({});
-  const [clock, setClock] = useState("");
+  // Clock uses a ref + direct DOM update to avoid re-rendering the entire layout tree every second
+  const clockRef = useRef<HTMLSpanElement>(null);
 
   // Schedule setup — fires once when owner is authenticated
   trpc.jarvis.setupSchedule.useQuery(undefined, {
@@ -43,10 +44,13 @@ export function JarvisLayout({ children }: { children: ReactNode }) {
     staleTime: Infinity,
   });
 
-  // Live clock
+  // Live clock — writes directly to the DOM span, zero React re-renders
   useEffect(() => {
-    const tick = () =>
-      setClock(new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+    const tick = () => {
+      if (clockRef.current) {
+        clockRef.current.textContent = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      }
+    };
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
@@ -191,9 +195,7 @@ export function JarvisLayout({ children }: { children: ReactNode }) {
 
         {/* Clock + avatar */}
         <div className="flex items-center gap-3 shrink-0">
-          <span className="text-[11px] font-mono text-muted-foreground tabular-nums hidden sm:inline">
-            {clock}
-          </span>
+          <span ref={clockRef} className="text-[11px] font-mono text-muted-foreground tabular-nums hidden sm:inline" />
           <button
             onClick={logout}
             className="w-7 h-7 rounded-full bg-secondary border border-border flex items-center justify-center hover:border-primary/50 transition-colors btn-press"
