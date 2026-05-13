@@ -401,7 +401,7 @@ export default function Home() {
   return (
     <JarvisLayout>  {!booted && <BootSequence onDone={() => { try { sessionStorage.setItem("jarvis_booted", "1"); } catch {} setBooted(true); }} />}
 
-      <div className="flex-1 flex flex-col items-center justify-center relative overflow-hidden min-h-[calc(100vh-3rem)]">
+      <div className="flex-1 flex flex-col items-center justify-center relative overflow-hidden min-h-[calc(100vh-3rem)]" style={{ position: "relative", zIndex: 10 }}>
         {/* Very subtle radial glow behind core */}
         <div
           className="absolute inset-0 pointer-events-none"
@@ -423,7 +423,7 @@ export default function Home() {
           animate={{ scale: booted ? 1 : 0.85, opacity: booted ? 1 : 0 }}
           transition={{ duration: 0.8, ease: [0.23, 1, 0.32, 1] }}
         >
-          <ReactorCore state={orbState} amplitude={amplitude} size={400} />
+          <ReactorCore state={orbState} amplitude={amplitude} />
         </motion.div>
 
         {/* State label + ticker */}

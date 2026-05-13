@@ -48,6 +48,8 @@ function lerp(a: number, b: number, t: number) {
 }
 
 // ── Procedural environment (no CDN, no external HDR file) ──────────────────────
+// Empty deps array ensures the env texture is created ONCE per mount.
+// Cleanup disposes GPU resources on unmount (handles React StrictMode double-invoke).
 function ProceduralEnv() {
   const { gl, scene } = useThree();
   useEffect(() => {
@@ -56,11 +58,12 @@ function ProceduralEnv() {
     const envTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     scene.environment = envTexture;
     return () => {
+      scene.environment = null;
       envTexture.dispose();
       pmrem.dispose();
-      scene.environment = null;
     };
-  }, [gl, scene]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intentionally empty — gl and scene refs are stable
   return null;
 }
 
@@ -357,29 +360,39 @@ function Scene({ state, amplitude }: { state: OrbState; amplitude: number }) {
 }
 
 // ── Exported component ────────────────────────────────────────────────────────
+// Stable key prevents Canvas remount when parent re-renders
+const CANVAS_KEY = "jarvis-reactor-canvas";
+
 export function ReactorCore({
   state,
   amplitude,
-  size = 420,
 }: {
   state: OrbState;
   amplitude: number;
-  size?: number;
 }) {
   return (
+    // position:fixed fills the entire viewport behind all UI elements
     <div
-      style={{ width: size, height: size }}
-      className="cursor-pointer select-none"
+      style={{
+        position: "fixed",
+        inset: 0,
+        width: "100vw",
+        height: "100vh",
+        zIndex: 0,
+        pointerEvents: "none",
+        background: "#000",
+      }}
     >
       <Canvas
+        key={CANVAS_KEY}
         camera={{ position: [0, 0, 4.5], fov: 45 }}
         gl={{
           antialias: true,
-          alpha: true,
+          alpha: false,
           toneMapping: THREE.ACESFilmicToneMapping,
           toneMappingExposure: 0.65,
         }}
-        style={{ background: "transparent" }}
+        style={{ width: "100%", height: "100%", display: "block" }}
       >
         <Scene state={state} amplitude={amplitude} />
       </Canvas>

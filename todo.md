@@ -144,3 +144,12 @@
 ## Live-Deploy Bugfixes
 - [x] Home.tsx: wrap return JSX in <JarvisLayout> (header missing on live)
 - [x] ReactorCore.tsx: CoreSphere envMapIntensity={0} (idle too bright from RoomEnvironment reflection)
+
+## Live-Deploy PR — 4 Fixes
+- [x] Home.tsx: JarvisLayout wrapper (header missing on live)
+- [x] ReactorCore.tsx: CoreSphere envMapIntensity={0}
+- [x] ReactorCore.tsx: fullscreen fixed background (position:fixed, inset:0, 100vw/100vh, z-index:0)
+- [x] ReactorCore.tsx: stable Canvas key to prevent remount
+- [x] ReactorCore.tsx: ProceduralEnv stable (empty deps array, correct cleanup)
+- [x] Home.tsx: all UI elements z-index>=10, no size prop on ReactorCore
+- [x] index.css / body: background #000 for max contrast

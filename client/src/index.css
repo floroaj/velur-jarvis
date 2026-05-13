@@ -124,16 +124,13 @@
   }
 
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground;
+    background-color: #000;
     font-family: var(--font-sans);
     font-size: 15px;
     line-height: 1.6;
     letter-spacing: -0.012em;
     overflow-x: hidden;
-    /* Very subtle radial gradient — barely visible, not distracting */
-    background-image:
-      radial-gradient(ellipse 80% 60% at 50% -10%, oklch(0.76 0.14 192 / 0.06) 0%, transparent 70%);
-    background-attachment: fixed;
   }
 
   /* Scrollbar */
